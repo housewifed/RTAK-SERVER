@@ -1,0 +1,29 @@
+[Unit]
+Description=RTAK Server - MediaMTX video engine (RTSP/RTMP/SRT/WebRTC)
+After=network-online.target rtak-takcore.service
+Wants=network-online.target
+PartOf=rtak.target
+
+[Service]
+Type=simple
+User=rtak
+Group=rtak
+EnvironmentFile=/etc/rtak/rtak.env
+WorkingDirectory=/var/lib/rtak
+ExecStart=/opt/rtak/bin/mediamtx /opt/rtak/config/mediamtx.yml
+Restart=always
+RestartSec=3
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/rtak
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

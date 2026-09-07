@@ -1,0 +1,11 @@
+# A disposable "Linux machine with systemd" used only to test the native
+# install the way it really runs (units, boot-enable, rtak CLI).
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive container=docker
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends systemd systemd-sysv dbus ffmpeg && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    find /etc/systemd/system /lib/systemd/system \
+         -path '*.wants/*' -name '*getty*' -delete
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd"]

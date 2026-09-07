@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TAK Revamp — Live Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="login-overlay" hidden>
+    <form id="login-form">
+      <h2>TAK&nbsp;Revamp</h2>
+      <p id="login-error" hidden>Invalid username or password</p>
+      <input id="login-user" type="text" placeholder="Username" autocomplete="username" />
+      <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password" />
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+
+  <div id="alert-banner" hidden></div>
+
+  <header id="topbar">
+    <span class="brand">TAK&nbsp;Revamp</span>
+    <span id="conn" class="pill offline">connecting…</span>
+    <span id="counts" class="pill">0 devices</span>
+    <button id="enroll-btn" title="Enroll a new device with a QR code">➕ Enroll device</button>
+    <button id="users-btn" title="Manage web logins (admin only)">👥 Users</button>
+    <button id="devices-btn" title="View and remove connected devices (admin only)">📟 Devices</button>
+    <button id="chat-btn" title="Team chat">💬 Chat</button>
+    <button id="playback-btn" title="Replay track history">⏱ Playback</button>
+    <button id="grid-btn" title="Multi-camera grid view">⊞ Cameras</button>
+    <button id="fit" title="Zoom to all devices">⤢ Fit all</button>
+  </header>
+
+  <aside id="roster">
+    <h2>Devices</h2>
+    <ul id="roster-list"></ul>
+    <button id="add-camera">+ Add IP camera</button>
+  </aside>
+
+  <section id="chat-panel" hidden>
+    <header>
+      <span>Team Chat</span>
+      <button id="chat-close" title="Close">✕</button>
+    </header>
+    <div id="chat-log"></div>
+    <form id="chat-form">
+      <input id="chat-input" type="text" placeholder="Message all devices…"
+             autocomplete="off" maxlength="800" />
+      <button type="submit">Send</button>
+    </form>
+  </section>
+
+  <div id="playback-bar" hidden>
+    <button id="pb-close" title="Exit playback">✕</button>
+    <span id="pb-label">Playback</span>
+    <input id="pb-slider" type="range" min="0" max="1000" value="1000" />
+    <span id="pb-time">live</span>
+    <button id="pb-play" title="Play / pause">▶</button>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+# MediaMTX configuration for RTAK Server (native Linux install)
+#
+# takcore is the source of truth for who may publish/read; MediaMTX asks it on
+# every connection via the HTTP auth hook below. Unlike the Docker build this
+# talks to 127.0.0.1 (same machine) instead of a compose service name.
+
+# ---- control API (used by takcore) ----
+api: yes
+apiAddress: 127.0.0.1:9997
+
+# ---- authentication: delegate every decision to takcore ----
+authMethod: http
+authHTTPAddress: http://127.0.0.1:8080/api/mediamtx/auth
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+
+# ---- ingest / playback protocols ----
+rtsp: yes
+rtspAddress: :8554
+
+rtmp: yes
+rtmpAddress: :1935
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+# Off-LAN video: the address handed to browsers as an ICE candidate. The
+# systemd unit sets MTX_WEBRTCADDITIONALHOSTS from SERVER_HOST in
+# /etc/rtak/rtak.env, so this needs no editing.
+
+hls: no   # WebRTC covers browser playback; enable for LL-HLS fallback later
+srt: yes
+
+# ---- recording + playback ----
+playback: yes
+playbackAddress: :9996
+
+pathDefaults:
+  # Recording is OFF by default. Recording every stream 24/7 fills the disk,
+  # and once the disk is full EVERY write fails - including the SQLite
+  # database (enrollment/chat/positions all start returning 500). Turn it on
+  # per-stream from the web UI instead.
+  record: no
+  recordPath: /var/lib/rtak/recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordSegmentDuration: 1h
+  recordDeleteAfter: 24h
+
+paths:
+  all_others:

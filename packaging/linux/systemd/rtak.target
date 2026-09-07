@@ -1,0 +1,7 @@
+[Unit]
+Description=RTAK Server (all services)
+Wants=rtak-takcore.service rtak-mediamtx.service
+After=rtak-takcore.service rtak-mediamtx.service
+
+[Install]
+WantedBy=multi-user.target

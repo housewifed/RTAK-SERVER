@@ -1,0 +1,23 @@
+# RTAK Server - HTTPS front door (native Linux install)
+#
+#     https://<your-domain>            -> web UI / API   (127.0.0.1:8080)
+#     https://<your-domain>/<p>/whep   -> live video     (127.0.0.1:8889)
+#
+# Caddy obtains and renews a free Let's Encrypt certificate automatically.
+# TAK_DOMAIN comes from /etc/rtak/rtak.env. Left at "localhost" Caddy uses its
+# own internal CA, so this works offline with no public ports.
+#
+# WHEP is proxied here too because a browser refuses to fetch plain-HTTP
+# MediaMTX (:8889) from a page loaded over HTTPS (mixed content) - video would
+# silently fail. Routing it through this same origin keeps one clean URL.
+
+{$TAK_DOMAIN:localhost} {
+	# --- live video: WHEP/WHIP signaling to MediaMTX ---
+	@webrtc path_regexp ^/.+/(whep|whip)(/.*)?$
+	reverse_proxy @webrtc 127.0.0.1:8889
+
+	# --- everything else: the TAK web UI + API ---
+	# reverse_proxy streams Server-Sent Events (/api/stream) unbuffered by
+	# default, so the live map keeps updating in real time.
+	reverse_proxy 127.0.0.1:8080
+}

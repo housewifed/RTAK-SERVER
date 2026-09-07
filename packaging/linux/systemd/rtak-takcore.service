@@ -1,0 +1,34 @@
+[Unit]
+Description=RTAK Server - TAK core (CoT/TLS 8089, web UI 8080, enrollment 8446)
+Documentation=https://github.com/housewifed/ATAK-REVAMP
+After=network-online.target
+Wants=network-online.target
+PartOf=rtak.target
+
+[Service]
+Type=simple
+User=rtak
+Group=rtak
+EnvironmentFile=/etc/rtak/rtak.env
+Environment=PYTHONPATH=/opt/rtak/app
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/rtak/app
+ExecStart=/opt/rtak/runtime/python/bin/python3 -m takcore
+Restart=always
+RestartSec=3
+
+# --- hardening: the service never needs root or the rest of the filesystem ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/rtak /etc/rtak/certs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

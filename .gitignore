@@ -1,0 +1,19 @@
+# Built bundles and download cache (large, reproducible from build-bundle.sh)
+dist/
+packaging/build/.cache/
+packaging/build/.stage-*
+
+# Python
+__pycache__/
+*.pyc
+
+# Local secrets / runtime (never commit)
+*.env
+!.env.example
+certs/
+*.pem
+*.key
+*.p12
+*.db
+
+.DS_Store

@@ -1,0 +1,126 @@
+#!/opt/rtak/runtime/python/bin/python3
+"""Tiny helper so RTAK's shell scripts need no curl / ss / hostname.
+
+Everything here uses only the Python standard library, which the bundle ships,
+so it works on a stripped-down Linux with nothing else installed.
+
+  rtak-util httpcode  <url>                 -> prints HTTP status (or 000)
+  rtak-util httpget   <url>                 -> prints body
+  rtak-util postjson  <url> <json> [cookie] -> prints body (saves/sends cookies)
+  rtak-util portopen  <port>                -> exit 0 if something listens
+  rtak-util localip                         -> best-guess LAN IP
+  rtak-util waitport  <port> <seconds>      -> exit 0 as soon as it opens
+"""
+import json as _json
+import socket
+import sys
+import urllib.error
+import urllib.request
+
+_JAR = "/tmp/.rtak-cookies"
+
+
+def _opener():
+    import http.cookiejar
+    cj = http.cookiejar.MozillaCookieJar(_JAR)
+    try:
+        cj.load(ignore_discard=True)
+    except Exception:
+        pass
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj)), cj
+
+
+def httpcode(url):
+    try:
+        with urllib.request.urlopen(url, timeout=6) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return 0
+
+
+def portopen(port, host="127.0.0.1"):
+    with socket.socket() as s:
+        s.settimeout(1.5)
+        return s.connect_ex((host, int(port))) == 0
+
+
+def localip():
+    # No traffic is actually sent; this just asks the kernel which source
+    # address it would use to reach the internet.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "localhost"
+
+
+def main(argv):
+    if len(argv) < 2:
+        print(__doc__)
+        return 2
+    cmd = argv[1]
+    if cmd == "httpcode":
+        print(httpcode(argv[2]))
+    elif cmd == "httpget":
+        # Share the cookie jar with postjson so an authenticated GET works
+        # after a login (e.g. reading /api/recordings).
+        op, _ = _opener()
+        try:
+            with op.open(argv[2], timeout=6) as r:
+                sys.stdout.write(r.read().decode("utf-8", "replace"))
+        except Exception as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+    elif cmd == "postjson":
+        op, cj = _opener()
+        req = urllib.request.Request(
+            argv[2], data=argv[3].encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with op.open(req, timeout=8) as r:
+                body = r.read().decode("utf-8", "replace")
+            cj.save(ignore_discard=True)
+            sys.stdout.write(body)
+        except urllib.error.HTTPError as e:
+            sys.stdout.write(e.read().decode("utf-8", "replace"))
+            return 1
+        except Exception as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+    elif cmd == "portopen":
+        return 0 if portopen(argv[2]) else 1
+    elif cmd == "waitport":
+        import time
+        deadline = time.time() + float(argv[3])
+        while time.time() < deadline:
+            if portopen(argv[2]):
+                return 0
+            time.sleep(0.5)
+        return 1
+    elif cmd == "localip":
+        print(localip())
+    elif cmd == "dbcount":
+        import sqlite3
+        try:
+            c = sqlite3.connect(argv[2])
+            print(c.execute("select count(*) from devices").fetchone()[0])
+        except Exception:
+            print("?")
+    elif cmd == "dbcheck":
+        import sqlite3
+        try:
+            c = sqlite3.connect(argv[2])
+            print(c.execute("PRAGMA integrity_check").fetchone()[0])
+        except Exception as e:
+            print(f"unreadable ({e})")
+    else:
+        print(__doc__)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

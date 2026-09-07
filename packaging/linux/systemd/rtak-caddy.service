@@ -9,6 +9,11 @@ Type=notify
 User=rtak
 Group=rtak
 EnvironmentFile=/etc/rtak/rtak.env
+# Caddy stores its certificates and internal CA under $XDG_DATA_HOME. Pin it
+# inside the one writable path below, otherwise it tries $HOME/.local and dies
+# on ProtectSystem=strict with a read-only filesystem error.
+Environment=XDG_DATA_HOME=/var/lib/rtak/caddy
+Environment=XDG_CONFIG_HOME=/var/lib/rtak/caddy
 ExecStart=/opt/rtak/bin/caddy run --config /opt/rtak/config/Caddyfile --adapter caddyfile
 ExecReload=/opt/rtak/bin/caddy reload --config /opt/rtak/config/Caddyfile --adapter caddyfile --force
 Restart=always

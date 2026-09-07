@@ -16,14 +16,19 @@ It is the same server as the Docker build, packaged to run natively:
 
 ## Install
 
-Download the file for your CPU, then run it:
+Grab the installer for your CPU from the
+[latest release](https://github.com/housewifed/RTAK-SERVER/releases/latest)
+and run it:
 
 ```bash
+# normal PC / server (uname -m says x86_64)
+wget https://github.com/housewifed/RTAK-SERVER/releases/download/v1.0.0/rtak-server-1.0.0-linux-amd64.run
 chmod +x rtak-server-1.0.0-linux-amd64.run
 sudo ./rtak-server-1.0.0-linux-amd64.run
 ```
 
-`amd64` = normal PC/server. `arm64` = Raspberry Pi 5, Ampere, ARM VM.
+On a Raspberry Pi 5 / ARM machine (`uname -m` says `aarch64`) use the
+`linux-arm64.run` file instead.
 
 That's it. It asks two questions (the address devices will use, and whether you
 want HTTPS), then installs, generates certificates, starts the services, enables

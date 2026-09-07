@@ -17,3 +17,5 @@ certs/
 *.db
 
 .DS_Store
+
+.devdata/

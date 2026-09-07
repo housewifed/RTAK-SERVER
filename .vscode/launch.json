@@ -1,0 +1,37 @@
+{
+  // Run the server straight from the editor (F5). Uses a local scratch dir so
+  // it never touches an installed /etc/rtak or /var/lib/rtak.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run RTAK server (local dev)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "takcore",
+      "cwd": "${workspaceFolder}/app",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/app",
+        "DB_PATH": "${workspaceFolder}/.devdata/takcore.db",
+        "WEB_DIR": "${workspaceFolder}/app/web",
+        "CERTS_DIR": "${workspaceFolder}/.devdata/certs",
+        "CERT_FILE": "${workspaceFolder}/.devdata/certs/server.pem",
+        "KEY_FILE": "${workspaceFolder}/.devdata/certs/server.key",
+        "CA_FILE": "${workspaceFolder}/.devdata/certs/ca.pem",
+        "AUTH_ENABLED": "1",
+        "ADMIN_USER": "admin",
+        "ADMIN_PASSWORD": "devpassword",
+        "PUBLISH_TOKEN": "devtoken"
+      }
+    },
+    {
+      "name": "Run unit tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests", "-v"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}

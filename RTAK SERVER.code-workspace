@@ -1,0 +1,11 @@
+{
+  "folders": [
+    {
+      "name": "RTAK SERVER",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "window.title": "RTAK SERVER — ${activeEditorShort}${separator}${rootName}"
+  }
+}

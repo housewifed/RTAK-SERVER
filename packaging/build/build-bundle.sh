@@ -121,7 +121,13 @@ build_one(){
   mkdir -p "$OUT"
   local NAME="rtak-server-$VERSION-linux-$ARCH"
   rm -rf "$OUT/$NAME"; mv "$STAGE" "$OUT/$NAME"
-  tar czf "$OUT/$NAME.tar.gz" -C "$OUT" "$NAME"
+  # macOS stamps every file with com.apple.provenance, which cannot be removed
+  # (xattr -c is refused on it). bsdtar would store it as a LIBARCHIVE.xattr
+  # pax header and GNU tar on the target then prints "Ignoring unknown extended
+  # header keyword" for each one, so tell bsdtar not to record xattrs at all.
+  local TAR_FLAGS=()
+  tar --version 2>/dev/null | grep -qi bsdtar && TAR_FLAGS=(--no-xattrs --no-mac-metadata)
+  tar czf "$OUT/$NAME.tar.gz" "${TAR_FLAGS[@]}" -C "$OUT" "$NAME"
   ( cd "$OUT" && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256" 2>/dev/null \
       || sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256" )
   ok "$OUT/$NAME.tar.gz  ($(du -h "$OUT/$NAME.tar.gz" | cut -f1))"

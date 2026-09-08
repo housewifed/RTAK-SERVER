@@ -716,6 +716,13 @@ def main() -> int:
                        method="DELETE")
         for uid in created["devices"]:
             a.call(f"/api/devices?uid={urllib.parse.quote(uid)}", method="DELETE")
+        # registering a camera also creates a CAM.<name> device row, so sweep
+        # anything carrying the tag rather than only the uids we connected with
+        for d in (a.call("/api/devices")[1] or []):
+            uid = str(d.get("uid", ""))
+            if TAG in uid or TAG in str(d.get("callsign", "")):
+                a.call(f"/api/devices?uid={urllib.parse.quote(uid)}",
+                       method="DELETE")
         for name in created["users"]:
             a.call(f"/api/users?username={urllib.parse.quote(name)}", method="DELETE")
         for path in dict.fromkeys(created["paths"]):
@@ -724,9 +731,10 @@ def main() -> int:
                method="DELETE")
 
         code, devs = a.call("/api/devices")
-        left_d = [d for d in (devs or []) if str(d.get("uid", "")).startswith(TAG)]
+        left_d = [d for d in (devs or [])
+                  if TAG in str(d.get("uid", "")) or TAG in str(d.get("callsign", ""))]
         code, users = a.call("/api/users")
-        left_u = [u for u in (users or []) if str(u.get("username", "")).startswith(TAG)]
+        left_u = [u for u in (users or []) if TAG in str(u.get("username", ""))]
         code, alerts = a.call("/api/alerts")
         left_a = [x for x in (alerts or []) if TAG in str(x.get("uid", ""))]
         ok("test alerts cleared") if not left_a else bad(f"alerts left behind: {left_a}")
@@ -740,7 +748,9 @@ def main() -> int:
                     shutil.rmtree(d, ignore_errors=True)
             ok("test recordings deleted from disk")
         else:
-            note("recordings for the test paths live under /var/lib/rtak/recordings on the server")
+            note("recordings for the test paths live under /var/lib/rtak/recordings "
+                 "on the server - remove them there")
+        note("the 2 chat messages this run posted stay: there is no chat delete API")
 
     shutil.rmtree(work, ignore_errors=True)
     return report()

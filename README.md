@@ -40,6 +40,19 @@ Non-interactive:
 sudo ./rtak-server-1.0.1-linux-amd64.run --yes --host rtak.example.com
 ```
 
+**Already running something on 8080 or 80?** SABnzbd, Home Assistant, Nextcloud
+and Jenkins all like those ports. Tell the installer which ones are free instead
+— nothing else has to move:
+
+```bash
+sudo ./rtak-server-1.0.1-linux-amd64.run --yes --host rtak.example.com \
+     --http-port 8081 --caddy-http-port 8880
+```
+
+`--caddy-http-port` moves only Caddy's plain-HTTP listener. HTTPS stays on 443,
+Let's Encrypt validates over TLS-ALPN, and just **443** needs forwarding. The
+installer refuses to start on a port another program owns, and names it.
+
 **Recommended OS: Ubuntu Server 24.04 LTS.** Debian 12 also works. See
 [docs/INSTALL.md](docs/INSTALL.md) for the full guide.
 
@@ -58,13 +71,27 @@ rtak restart
 
 | Port | Proto | What |
 |------|-------|------|
-| 8080 | TCP | web UI / API |
+| 8080 | TCP | web UI / API (`HTTP_PORT`, moveable) |
 | 8089 | TCP | device CoT over TLS (mTLS) — **the one devices always need** |
 | 8446 | TCP | certificate enrollment |
 | 8554 / 1935 | TCP | RTSP / RTMP video in |
 | 8890 / 8189 | UDP | SRT in / WebRTC media |
 | 8889 / 9996 | TCP | WebRTC playback / recording playback |
-| 80 + 443 | TCP | only if you enable HTTPS |
+| 80 + 443 | TCP | only if you enable HTTPS (80 is `CADDY_HTTP_PORT`, moveable) |
+
+## Testing it works
+
+`rtak doctor` is the 30-second health check. For a full end-to-end exercise of
+every subsystem — enrollment, devices over mTLS, chat, 911, users and roles,
+cameras, RTSP/RTMP/SRT ingest, WebRTC tickets, recording and playback — see
+**[docs/TESTING.md](docs/TESTING.md)**:
+
+```bash
+python3 tests/full_system_check.py --api http://<server>:8080 \
+    --media-host <server> --password '<admin password>'
+```
+
+It cleans up everything it creates and never touches data it did not make.
 
 ## Upgrading
 

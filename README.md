@@ -22,9 +22,9 @@ and run it:
 
 ```bash
 # normal PC / server (uname -m says x86_64)
-wget https://github.com/housewifed/RTAK-SERVER/releases/download/v1.0.0/rtak-server-1.0.0-linux-amd64.run
-chmod +x rtak-server-1.0.0-linux-amd64.run
-sudo ./rtak-server-1.0.0-linux-amd64.run
+wget https://github.com/housewifed/RTAK-SERVER/releases/download/v1.0.1/rtak-server-1.0.1-linux-amd64.run
+chmod +x rtak-server-1.0.1-linux-amd64.run
+sudo ./rtak-server-1.0.1-linux-amd64.run
 ```
 
 On a Raspberry Pi 5 / ARM machine (`uname -m` says `aarch64`) use the
@@ -37,7 +37,7 @@ them at boot, and prints your admin password.
 Non-interactive:
 
 ```bash
-sudo ./rtak-server-1.0.0-linux-amd64.run --yes --host rtak.example.com
+sudo ./rtak-server-1.0.1-linux-amd64.run --yes --host rtak.example.com
 ```
 
 **Recommended OS: Ubuntu Server 24.04 LTS.** Debian 12 also works. See

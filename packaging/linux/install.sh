@@ -4,6 +4,8 @@
 #   sudo ./install.sh                      interactive
 #   sudo ./install.sh --yes                accept sensible defaults
 #   sudo ./install.sh --host rtak.example.com --domain rtak.example.com
+#   sudo ./install.sh --http-port 8081     if another program owns :8080
+#   sudo ./install.sh --caddy-http-port 8880   if another program owns :80
 #
 # Re-running upgrades the program files and LEAVES YOUR DATA ALONE
 # (devices, certificates, recordings and settings are preserved).
@@ -24,10 +26,13 @@ warn() { printf "    ${c_y}!!${c_0} %s\n" "$*"; }
 die()  { printf "\n${c_r}ERROR:${c_0} %s\n\n" "$*" >&2; exit 1; }
 
 OPT_HOST=""; OPT_DOMAIN=""; OPT_PW=""; OPT_YES=0; OPT_FW=1; OPT_SERVICE=1
+OPT_HTTP_PORT=""; OPT_CADDY_HTTP=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --host)            OPT_HOST="${2:?}"; shift 2 ;;
     --domain)          OPT_DOMAIN="${2:?}"; shift 2 ;;
+    --http-port)       OPT_HTTP_PORT="${2:?}"; shift 2 ;;
+    --caddy-http-port) OPT_CADDY_HTTP="${2:?}"; shift 2 ;;
     --admin-password)  OPT_PW="${2:?}"; shift 2 ;;
     -y|--yes)          OPT_YES=1; shift ;;
     --no-firewall)     OPT_FW=0; shift ;;
@@ -64,6 +69,7 @@ fi
 # ---------------------------------------------------------------- settings ---
 # On upgrade keep whatever is already configured; only ask for what is missing.
 EX_HOST=""; EX_DOMAIN=""; EX_PW=""; EX_USER=""; EX_PT=""; EX_SS=""
+EX_HTTP_PORT=""; EX_CADDY_HTTP=""
 if [ "$UPGRADE" = 1 ]; then
   # shellcheck disable=SC1090
   EX_HOST=$(grep -E '^SERVER_HOST=' "$ETC/rtak.env" | cut -d= -f2- || true)
@@ -72,7 +78,11 @@ if [ "$UPGRADE" = 1 ]; then
   EX_USER=$(grep -E '^ADMIN_USER=' "$ETC/rtak.env" | cut -d= -f2- || true)
   EX_PT=$(grep -E '^PUBLISH_TOKEN=' "$ETC/rtak.env" | cut -d= -f2- || true)
   EX_SS=$(grep -E '^STREAM_TOKEN_SECRET=' "$ETC/rtak.env" | cut -d= -f2- || true)
+  EX_HTTP_PORT=$(grep -E '^HTTP_PORT=' "$ETC/rtak.env" | cut -d= -f2- || true)
+  EX_CADDY_HTTP=$(grep -E '^CADDY_HTTP_PORT=' "$ETC/rtak.env" | cut -d= -f2- || true)
 fi
+HTTP_PORT="${OPT_HTTP_PORT:-${EX_HTTP_PORT:-8080}}"
+CADDY_HTTP_PORT="${OPT_CADDY_HTTP:-${EX_CADDY_HTTP:-80}}"
 
 PYBIN="$PAY/runtime/python/bin/python3"
 detect_ip() { "$PYBIN" -c 'import socket
@@ -97,7 +107,7 @@ if [ "$INTERACTIVE" = 1 ]; then
   if [ -z "$OPT_DOMAIN" ]; then
     printf "\n  Enable HTTPS with a free Let's Encrypt certificate?\n"
     printf "  Needs a public domain name pointing here, plus ports 80+443 forwarded.\n"
-    printf "  Domain (blank = skip, use plain http on :8080) [%s]: " "${EX_DOMAIN:-}"
+    printf "  Domain (blank = skip, use plain http on :%s) [%s]: " "$HTTP_PORT" "${EX_DOMAIN:-}"
     read -r a; TAK_DOMAIN="${a:-${EX_DOMAIN:-localhost}}"
     [ -z "$TAK_DOMAIN" ] && TAK_DOMAIN=localhost
   fi
@@ -187,8 +197,13 @@ TAK_TCP_PORT=0
 
 # Ports
 TAK_TLS_PORT=8089
-HTTP_PORT=8080
+HTTP_PORT=$HTTP_PORT
 ENROLL_PORT=8446
+# Caddy's plain-HTTP listener (redirect + Let's Encrypt HTTP challenge). Move
+# it off 80 if another program owns that port; HTTPS stays on 443 and the
+# certificate is then validated over TLS-ALPN instead.
+CADDY_HTTP_PORT=$CADDY_HTTP_PORT
+CADDY_HTTPS_PORT=443
 
 # Paths
 DB_PATH=$DATA/takcore.db
@@ -199,6 +214,9 @@ CA_FILE=$ETC/certs/ca.pem
 CERTS_DIR=$ETC/certs
 
 # Video engine (local)
+# MediaMTX asks takcore to authorise every publisher/viewer; MTX_ prefixed
+# variables override mediamtx.yml, so this follows HTTP_PORT automatically.
+MTX_AUTHHTTPADDRESS=http://127.0.0.1:$HTTP_PORT/api/mediamtx/auth
 MEDIAMTX_API=http://127.0.0.1:9997
 MEDIAMTX_PLAYBACK=http://127.0.0.1:9996
 MTX_WEBRTCADDITIONALHOSTS=$SERVER_HOST
@@ -243,6 +261,27 @@ if [ "$HAVE_SYSTEMD" = 1 ]; then
     systemctl disable rtak-caddy >/dev/null 2>&1 || true
   fi
   ok "services enabled (they start automatically at boot)"
+
+  # Our own services are stopped at this point, so anything still listening
+  # belongs to another program. Starting anyway would crash-loop on EADDRINUSE.
+  # -> " - nginx (pid 1234)" when ss can tell us, empty when it cannot
+  port_owner() {
+    command -v ss >/dev/null 2>&1 || return 0
+    ss -lntp "sport = :$1" 2>/dev/null |
+      sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/ - \1 (pid \2)/p' | head -1
+  }
+  if "$PREFIX/bin/rtak-util" portopen "$HTTP_PORT"; then
+    die "port $HTTP_PORT is already in use by another program$(port_owner "$HTTP_PORT")
+         RTAK's web UI cannot start there. Re-run the installer with a free
+         port, e.g.:   sudo ./rtak-server-*.run --yes --http-port 8081"
+  fi
+  if [ "$TAK_DOMAIN" != "localhost" ] && [ -n "$TAK_DOMAIN" ] \
+     && "$PREFIX/bin/rtak-util" portopen "$CADDY_HTTP_PORT"; then
+    warn "port $CADDY_HTTP_PORT is already in use by another program$(port_owner "$CADDY_HTTP_PORT")"
+    warn "set CADDY_HTTP_PORT in $ETC/rtak.env to a free port (HTTPS stays on 443),"
+    warn "then: sudo rtak restart      - until then HTTPS will not start"
+  fi
+
   systemctl restart rtak-takcore rtak-mediamtx
   [ "$TAK_DOMAIN" != "localhost" ] && [ -n "$TAK_DOMAIN" ] && systemctl restart rtak-caddy || true
 else
@@ -253,10 +292,10 @@ fi
 # --------------------------------------------------------------- firewall ---
 if [ "$OPT_FW" = 1 ] && command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   say "Opening firewall ports (ufw)"
-  for p in 8080/tcp 8089/tcp 8446/tcp 8554/tcp 1935/tcp 8889/tcp 9996/tcp 8890/udp 8189/udp; do
+  for p in "$HTTP_PORT/tcp" 8089/tcp 8446/tcp 8554/tcp 1935/tcp 8889/tcp 9996/tcp 8890/udp 8189/udp; do
     ufw allow "$p" >/dev/null 2>&1 || true
   done
-  if [ "$TAK_DOMAIN" != "localhost" ]; then ufw allow 80/tcp >/dev/null 2>&1; ufw allow 443/tcp >/dev/null 2>&1; fi
+  if [ "$TAK_DOMAIN" != "localhost" ]; then ufw allow "$CADDY_HTTP_PORT/tcp" >/dev/null 2>&1; ufw allow 443/tcp >/dev/null 2>&1; fi
   ok "ufw rules added"
 fi
 
@@ -265,8 +304,13 @@ ln -sf "$PREFIX/bin/rtak" /usr/local/bin/rtak
 # ------------------------------------------------------------------ check ---
 if [ "$HAVE_SYSTEMD" = 1 ]; then
   say "Checking the server came up"
-  if "$PREFIX/bin/rtak-util" waitport 8080 25; then ok "web UI is answering on port 8080"
-  else warn "web UI did not answer within 25s - check:  rtak logs takcore"; fi
+  # Check the service, not just the port: a port probe passes even when the
+  # thing listening is some other program that beat us to it.
+  if "$PREFIX/bin/rtak-util" waitport "$HTTP_PORT" 25 \
+     && systemctl is-active --quiet rtak-takcore \
+     && case "$("$PREFIX/bin/rtak-util" httpcode "http://127.0.0.1:$HTTP_PORT/api/config")" in 200|401|403) true;; *) false;; esac
+  then ok "web UI is answering on port $HTTP_PORT"
+  else warn "the web UI did not come up - check:  rtak logs takcore"; fi
   "$PREFIX/bin/rtak-util" waitport 8554 10 >/dev/null 2>&1 && ok "video engine is up" || warn "video engine slow to start - check: rtak logs mediamtx"
 fi
 
@@ -277,7 +321,7 @@ ${c_g}============================================================${c_0}
 ${c_g} RTAK Server $VERSION is installed${c_0}
 ${c_g}============================================================${c_0}
 
-  Open the web UI:   ${c_b}http://$IP:8080${c_0}
+  Open the web UI:   ${c_b}http://$IP:$HTTP_PORT${c_0}
 SUMMARY
 [ "$TAK_DOMAIN" != "localhost" ] && [ -n "$TAK_DOMAIN" ] && printf "                     ${c_b}https://%s${c_0}   (Let's Encrypt)\n" "$TAK_DOMAIN"
 cat <<SUMMARY

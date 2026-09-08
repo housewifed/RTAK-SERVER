@@ -147,6 +147,7 @@ rtak doctor
 | Phone connects on Wi-Fi but not mobile data | Port **8089** (and 8446 to enroll) isn't forwarded on the router |
 | Video won't play remotely | Forward **8189/udp**; check `SERVER_HOST` is the public name |
 | Disk filling up | Recordings. `du -sh /var/lib/rtak/recordings`; turn recording off in the UI |
+| `Address already in use` in `rtak logs` | Another program already owns the port. See "Sharing the machine" below |
 | Everything is broken | `sudo rtak restart`, then `rtak doctor` |
 
 Logs:
@@ -155,6 +156,30 @@ Logs:
 rtak logs -f              # everything
 rtak logs takcore         # just the TAK core
 ```
+
+### Sharing the machine with other services
+
+Port 8080 is a popular default (SABnzbd, Home Assistant, Jenkins), and :80 is
+usually taken the moment anything web-facing is installed. RTAK does not fight
+for either - it just needs to be told which ports are free.
+
+The installer refuses to start on an occupied web port and tells you so. Pick
+another one at install time:
+
+```bash
+sudo ./rtak-server-1.0.0-linux-amd64.run --yes --http-port 8081
+```
+
+or afterwards, in `/etc/rtak/rtak.env`:
+
+```bash
+HTTP_PORT=8081          # web UI / API - the CLI, Caddy and MediaMTX follow it
+CADDY_HTTP_PORT=8880    # Caddy's plain-HTTP listener, if :80 belongs elsewhere
+```
+
+then `sudo rtak restart`. Moving `CADDY_HTTP_PORT` off 80 keeps HTTPS on 443;
+Let's Encrypt then validates over TLS-ALPN on 443, so only **443** has to be
+forwarded in the router. Devices are unaffected - they use 8089 and 8446.
 
 ## 10. What got installed where
 

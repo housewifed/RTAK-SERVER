@@ -1,6 +1,6 @@
 # RTAK Server - HTTPS front door (native Linux install)
 #
-#     https://<your-domain>            -> web UI / API   (127.0.0.1:8080)
+#     https://<your-domain>            -> web UI / API   (127.0.0.1:$HTTP_PORT)
 #     https://<your-domain>/<p>/whep   -> live video     (127.0.0.1:8889)
 #
 # Caddy obtains and renews a free Let's Encrypt certificate automatically.
@@ -11,6 +11,16 @@
 # MediaMTX (:8889) from a page loaded over HTTPS (mixed content) - video would
 # silently fail. Routing it through this same origin keeps one clean URL.
 
+{
+	# The ports Caddy itself listens on. If another program already owns :80
+	# (a Nextcloud/Apache/nginx install), set CADDY_HTTP_PORT in
+	# /etc/rtak/rtak.env to a free port instead of fighting over it: Caddy
+	# keeps :443, and Let's Encrypt then validates over TLS-ALPN on 443, so
+	# certificates still issue and renew - forward TCP 443 in the router.
+	http_port {$CADDY_HTTP_PORT:80}
+	https_port {$CADDY_HTTPS_PORT:443}
+}
+
 {$TAK_DOMAIN:localhost} {
 	# --- live video: WHEP/WHIP signaling to MediaMTX ---
 	@webrtc path_regexp ^/.+/(whep|whip)(/.*)?$
@@ -19,5 +29,5 @@
 	# --- everything else: the TAK web UI + API ---
 	# reverse_proxy streams Server-Sent Events (/api/stream) unbuffered by
 	# default, so the live map keeps updating in real time.
-	reverse_proxy 127.0.0.1:8080
+	reverse_proxy 127.0.0.1:{$HTTP_PORT:8080}
 }

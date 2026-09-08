@@ -10,6 +10,8 @@ apiAddress: 127.0.0.1:9997
 
 # ---- authentication: delegate every decision to takcore ----
 authMethod: http
+# The port here is the default; the systemd unit overrides it with
+# MTX_AUTHHTTPADDRESS from /etc/rtak/rtak.env so it always follows HTTP_PORT.
 authHTTPAddress: http://127.0.0.1:8080/api/mediamtx/auth
 authHTTPExclude:
   - action: api

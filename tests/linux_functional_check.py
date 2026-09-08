@@ -28,7 +28,6 @@ from datetime import datetime, timedelta, timezone
 PREFIX = "/opt/rtak"
 ENVF = "/etc/rtak/rtak.env"
 OPENSSL = f"{PREFIX}/bin/openssl"
-API = "http://127.0.0.1:8080"
 
 PASS, FAIL = [], []
 
@@ -59,6 +58,8 @@ def env():
 
 
 E = env()
+# The web port is configurable (another program may already own 8080).
+API = f"http://127.0.0.1:{E.get('HTTP_PORT', '8080')}"
 opener = urllib.request.build_opener(
     urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 

@@ -21,6 +21,11 @@ head_(){ printf "\n${c_b}%s${c_0}\n" "$*"; }
 need_root(){ [ "$(id -u)" -eq 0 ] || { echo "This command needs sudo:  sudo rtak $CMD"; exit 1; }; }
 load_env(){ if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi; }
 caddy_enabled(){ systemctl is-enabled rtak-caddy >/dev/null 2>&1; }
+# Ports come from rtak.env so a machine where 8080 (or 80) is already taken by
+# another program still works - load_env exports them, subshells included.
+web_port(){ echo "${HTTP_PORT:-8080}"; }
+caddy_http_port(){ echo "${CADDY_HTTP_PORT:-80}"; }
+caddy_https_port(){ echo "${CADDY_HTTPS_PORT:-443}"; }
 all_services(){ local s=("${SERVICES[@]}"); caddy_enabled && s+=(rtak-caddy); printf '%s\n' "${s[@]}"; }
 
 usage(){ cat <<USAGE
@@ -48,8 +53,8 @@ cmd_status(){
     else printf "  ${c_r}stopped${c_0}  %s\n" "$s"; fi
   done
   head_ "Listening ports"
-  local ports="8080 8089 8446 8554 1935 8889 9996"
-  caddy_enabled && ports="$ports 80 443"
+  local ports="$(web_port) 8089 8446 8554 1935 8889 9996"
+  caddy_enabled && ports="$ports $(caddy_http_port) $(caddy_https_port)"
   for p in $ports; do
     if "$UTIL" portopen "$p"; then printf "  ${c_g}open${c_0}    %-5s %s\n" "$p" "$(port_label "$p")"
     else printf "  ${c_y}closed${c_0}  %-5s %s\n" "$p" "$(port_label "$p")"; fi
@@ -57,10 +62,14 @@ cmd_status(){
   cmd_url
 }
 
-port_label(){ case "$1" in
-  8080) echo "web UI / API";; 8089) echo "device CoT over TLS";; 8446) echo "device enrollment";;
+port_label(){
+  [ "$1" = "$(web_port)" ] && { echo "web UI / API"; return; }
+  [ "$1" = "$(caddy_http_port)" ] && { echo "HTTP redirect / Let's Encrypt"; return; }
+  [ "$1" = "$(caddy_https_port)" ] && { echo "HTTPS"; return; }
+  case "$1" in
+  8089) echo "device CoT over TLS";; 8446) echo "device enrollment";;
   8554) echo "RTSP video";; 1935) echo "RTMP video";; 8889) echo "WebRTC video";;
-  9996) echo "recording playback";; 80) echo "HTTP redirect / Let's Encrypt";; 443) echo "HTTPS";; *) echo "";; esac; }
+  9996) echo "recording playback";; *) echo "";; esac; }
 
 cmd_url(){
   load_env
@@ -68,7 +77,7 @@ cmd_url(){
   if caddy_enabled && [ -n "${TAK_DOMAIN:-}" ] && [ "${TAK_DOMAIN}" != "localhost" ]; then
     echo "  https://${TAK_DOMAIN}"
   fi
-  echo "  http://$("$UTIL" localip 2>/dev/null || echo localhost):8080"
+  echo "  http://$("$UTIL" localip 2>/dev/null || echo localhost):$(web_port)"
 }
 
 cmd_logs(){
@@ -88,15 +97,15 @@ cmd_doctor(){
   done
 
   head_ "Network ports"
-  local ports="8080 8089 8446 8554 8889"
-  caddy_enabled && ports="$ports 80 443"
+  local ports="$(web_port) 8089 8446 8554 8889"
+  caddy_enabled && ports="$ports $(caddy_http_port) $(caddy_https_port)"
   for p in $ports; do
     if "$UTIL" portopen "$p"; then ok "port $p listening  ($(port_label "$p"))"
     else bad "port $p NOT listening  ($(port_label "$p"))"; fi
   done
 
   head_ "Web + video APIs"
-  local code; code=$("$UTIL" httpcode http://127.0.0.1:8080/api/config 2>/dev/null)
+  local code; code=$("$UTIL" httpcode "http://127.0.0.1:$(web_port)/api/config" 2>/dev/null)
   case "$code" in 200|401|403) ok "web API responding (HTTP $code)";;
     *) bad "web API not responding (got '${code:-none}')";; esac
   code=$("$UTIL" httpcode http://127.0.0.1:9997/v3/paths/list 2>/dev/null)
@@ -170,10 +179,10 @@ cmd_enroll(){
   load_env
   local callsign="${1:-device-$(date +%H%M%S)}"
   rm -f /tmp/.rtak-cookies
-  "$UTIL" postjson http://127.0.0.1:8080/api/login \
+  "$UTIL" postjson "http://127.0.0.1:$(web_port)/api/login" \
      "{\"username\":\"${ADMIN_USER:-admin}\",\"password\":\"${ADMIN_PASSWORD:-}\"}" >/dev/null 2>&1 \
      || { echo "Could not log in to the local API. Is it running?  rtak status"; exit 1; }
-  "$UTIL" postjson http://127.0.0.1:8080/api/enroll/tokens "{\"callsign\":\"$callsign\"}" | "$PY" -c '
+  "$UTIL" postjson "http://127.0.0.1:$(web_port)/api/enroll/tokens" "{\"callsign\":\"$callsign\"}" | "$PY" -c '
 import json,sys
 raw=sys.stdin.read()
 try: d=json.loads(raw)

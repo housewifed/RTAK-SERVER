@@ -1257,7 +1257,9 @@ document.getElementById("enroll-btn").onclick = async () => {
     return;
   }
   const t = await resp.json();
-  showEnrollPanel(t, callsign, host);
+  let cfg = {};
+  try { cfg = await (await fetch("/api/config")).json(); } catch { /* ignore */ }
+  showEnrollPanel(t, callsign, host, cfg);
 };
 
 // ----------------------------------------------------- web users (admin only)
@@ -1464,8 +1466,16 @@ async function showDevicesPanel() {
   refresh();
 }
 
-function showEnrollPanel(t, callsign, host) {
-  const httpPort = location.port || "8080";
+function showEnrollPanel(t, callsign, host, cfg = {}) {
+  // The QRs must encode the address the PHONE uses, which is not the address
+  // this browser is on. With HTTPS enabled the package and the iOS profile come
+  // through Caddy on 443 - deriving the port from location.port produced
+  // http://host:8080/... which the phone could not reach. The server tells us
+  // the right base; fall back to the browser's own origin shape only if an
+  // older server has no web_base.
+  const webBase = cfg.web_base ||
+    `http://${host}:${location.port || "8080"}`;
+  const cotPort = cfg.tls_port || "8089";
   // ATAK onboarding, the proven-reliable path: the QR encodes the softcert
   // package DOWNLOAD url (not a tak://import). Scanned with the phone Camera it
   // makes the browser download TAK-Revamp_Connect.zip; the user imports it via
@@ -1476,19 +1486,19 @@ function showEnrollPanel(t, callsign, host) {
   // only thing ATAK keeps. So: scan → download → Import Manager → tap the file →
   // connected & saved, no typing. (Token in the url only authorizes the
   // download; it is not consumed, so the QR can be re-scanned.)
-  const pkgUrl = `http://${host}:${httpPort}/enroll.zip` +
+  const pkgUrl = `${webBase}/enroll.zip` +
     `?callsign=${encodeURIComponent(callsign)}` +
     `&username=${encodeURIComponent(t.username)}` +
     `&token=${encodeURIComponent(t.token)}`;
   const atakImportUrl = pkgUrl;  // plain download; the Camera opens it in a browser
-  const itakText = `TAK-Revamp,${host},8089,ssl`;
+  const itakText = `TAK-Revamp,${host},${cotPort},ssl`;
 
   const ov = document.createElement("div");
   ov.id = "enroll-overlay";
   ov.innerHTML = `
     <div class="enroll-card">
       <h3>Enroll ${escapeHtml(callsign)}</h3>
-      <p class="enroll-server">Server: <code>${escapeHtml(host)}:8089</code>
+      <p class="enroll-server">Server: <code>${escapeHtml(host)}:${escapeHtml(String(cotPort))}</code>
         &nbsp;·&nbsp; iTAK/manual credentials if asked:
         user <code>${escapeHtml(t.username)}</code>
         pass <code>${escapeHtml(t.token)}</code></p>
@@ -1517,7 +1527,8 @@ function showEnrollPanel(t, callsign, host) {
         </div>
       </div>
       <p class="enroll-note">
-        Token valid 24 h. The ATAK package carries the CA, so no truststore
+        QRs point at <code>${escapeHtml(webBase)}</code> — the address the
+        phone must reach. Token valid 24 h. The ATAK package carries the CA, so no truststore
         copying is needed. Manual fallback:
         <a href="/truststore.p12" download>download truststore.p12</a>
         (password <code>atakatak</code>) and add the server by hand.
@@ -1528,7 +1539,7 @@ function showEnrollPanel(t, callsign, host) {
   new QRCode(document.getElementById("qr-atak"),
     { text: atakImportUrl, width: 190, height: 190, correctLevel: QRCode.CorrectLevel.L });
   new QRCode(document.getElementById("qr-ios-trust"),
-    { text: `http://${host}:${httpPort}/ca.mobileconfig`,
+    { text: `${webBase}/ca.mobileconfig`,
       width: 190, height: 190, correctLevel: QRCode.CorrectLevel.M });
   new QRCode(document.getElementById("qr-itak"),
     { text: itakText, width: 190, height: 190, correctLevel: QRCode.CorrectLevel.M });

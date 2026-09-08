@@ -49,6 +49,16 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _cot_port() -> int:
+    """The CoT TLS port a data package tells the device to dial. Almost always
+    8089, but TAK_TLS_PORT is configurable and the package has to agree with
+    what the server actually listens on."""
+    try:
+        return int(os.environ.get("TAK_TLS_PORT", "8089"))
+    except ValueError:
+        return 8089
+
+
 class EnrollmentService:
     """Token issue/verify + certificate signing logic (transport-agnostic)."""
 
@@ -120,7 +130,8 @@ class EnrollmentService:
         ts = self.truststore_bytes()
         if ts is None:
             return None
-        return build_enrollment_package(host, ts, callsign=callsign)
+        return build_enrollment_package(host, ts, callsign=callsign,
+                                       port=_cot_port())
 
     def softcert_package(self, host: str, callsign: Optional[str] = None
                          ) -> Optional[bytes]:
@@ -132,7 +143,8 @@ class EnrollmentService:
             return None
         cn = callsign or f"device-{secrets.token_hex(3)}"
         client_p12 = self.ca.make_client_p12(cn)
-        return build_softcert_package(host, ts, client_p12, callsign=callsign)
+        return build_softcert_package(host, ts, client_p12, callsign=callsign,
+                                     port=_cot_port())
 
     # -- tokens ---------------------------------------------------------------
 

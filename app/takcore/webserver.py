@@ -49,6 +49,30 @@ ENDPOINT_ROLES = {
 }
 
 
+def https_enabled(env) -> bool:
+    """True when Caddy is fronting the server with a real certificate."""
+    domain = env.get("TAK_DOMAIN", "")
+    return bool(domain) and domain != "localhost"
+
+
+def public_web_base(env) -> str:
+    """The base URL a PHONE must use to reach the web server.
+
+    Not the address the admin's browser happens to be on: with HTTPS enabled
+    the enrollment package and the iOS profile come through Caddy on 443, while
+    takcore's own port is usually not reachable from outside at all. Returns ""
+    when SERVER_HOST is unset and there is no domain, so callers can fall back.
+    """
+    if https_enabled(env):
+        port = env.get("CADDY_HTTPS_PORT") or "443"
+        suffix = "" if str(port) == "443" else f":{port}"
+        return f"https://{env.get('TAK_DOMAIN', '')}{suffix}"
+    host = env.get("SERVER_HOST", "")
+    if not host:
+        return ""
+    return f"http://{host}:{env.get('HTTP_PORT') or '8080'}"
+
+
 def make_handler(hub: Hub, store: Store, web_dir: str,
                  registry: Optional[StreamRegistry] = None,
                  enroll: Optional[EnrollmentService] = None,
@@ -189,9 +213,23 @@ def make_handler(hub: Hub, store: Store, web_dir: str,
                         pass
                     self._json(store.history(min(mins, 1440)))
                 elif path == "/api/config":
-                    self._json({"server_host": os.environ.get("SERVER_HOST", ""),
+                    # web_base is the address a PHONE must use to fetch the
+                    # enrollment package and the iOS profile. It is not the
+                    # address this browser is on: with HTTPS enabled those come
+                    # through Caddy on 443, not through takcore's own port, and
+                    # an admin may well be on the LAN IP while the phone is not.
+                    self._json({"server_host": os.environ.get("SERVER_HOST",
+                                                              ""),
                                 "publish_token": os.environ.get("PUBLISH_TOKEN",
-                                                                "")})
+                                                                ""),
+                                "web_base": public_web_base(os.environ),
+                                "https": https_enabled(os.environ),
+                                "http_port": os.environ.get("HTTP_PORT",
+                                                            "8080"),
+                                "tls_port": os.environ.get("TAK_TLS_PORT",
+                                                           "8089"),
+                                "enroll_port": os.environ.get("ENROLL_PORT",
+                                                              "8446")})
                 elif path == "/ca.mobileconfig":
                     log.info("ca.mobileconfig downloaded by %s",
                              self.address_string())

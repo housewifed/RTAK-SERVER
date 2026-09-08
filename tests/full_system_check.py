@@ -377,6 +377,32 @@ def main() -> int:
     ok("iTAK mobileconfig downloadable") if code == 200 and body \
         else bad(f"/ca.mobileconfig returned {code}")
 
+    # The enrollment QR codes encode cfg["web_base"], so that address has to
+    # serve these files to an unauthenticated phone. Fetch them exactly as a
+    # phone would - this is what catches a QR pointing at the wrong port.
+    base = (cfg or {}).get("web_base") or ""
+    if not base:
+        bad("/api/config does not advertise web_base - the QR codes will guess")
+    else:
+        ok(f"QR codes will encode {base}")
+        if cfg.get("https") and base.startswith("http://"):
+            bad("HTTPS is on but web_base is plain http")
+        if cfg.get("https") and f":{cfg.get('http_port')}" in base:
+            bad(f"web_base leaks takcore's own port into an HTTPS URL: {base}")
+        ctx_any = ssl._create_unverified_context()
+        for path, label in (("/ca.mobileconfig", "iOS trust profile"),
+                            (f"/enroll.zip?username={urllib.parse.quote(enroll_user)}"
+                             f"&token={urllib.parse.quote(tok['token'])}",
+                             "ATAK softcert package")):
+            try:
+                with urllib.request.urlopen(base + path, timeout=20,
+                                            context=ctx_any) as r:
+                    n = len(r.read())
+                ok(f"{label} downloads from the QR address ({n} bytes)") if n \
+                    else bad(f"{label} came back empty from {base}")
+            except Exception as e:  # noqa: BLE001
+                bad(f"{label} is NOT reachable at {base}{path.split('?')[0]}: {e}")
+
     # ---------------------------------------------------------------------
     head("5. Devices connect over mTLS")
     ctx2 = ssl._create_unverified_context()

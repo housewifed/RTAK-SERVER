@@ -76,7 +76,7 @@ local run exercises the certificate files on disk.
 | 1 | Reachability | web API answers; CoT, enrollment, RTSP, RTMP, WebRTC ports open |
 | 2 | Authentication | anonymous API refused (401), wrong password refused, admin login, session identity |
 | 3 | Users and roles | create viewer + operator, viewer denied writes (403), operator allowed chat but denied user creation, last admin cannot be demoted (409), role change applies |
-| 4 | Enrollment | token issued, CSR signed by the Marti API, certificate verifies against the CA, `tls/config` + `version/config` + `clientEndPoints` answer, `enroll.zip` refused without a token and served with one, `mode=enroll` package, `ca.mobileconfig` for iTAK |
+| 4 | Enrollment | token issued, CSR signed by the Marti API, certificate verifies against the CA, `tls/config` + `version/config` + `clientEndPoints` answer, `enroll.zip` refused without a token and served with one, `mode=enroll` package, `ca.mobileconfig` for iTAK, and **the address the QR codes encode** (`web_base`) actually serves both files to an unauthenticated client |
 | 5 | Devices over mTLS | two devices connect on 8089 with client certificates and report positions; plain TCP to that port is rejected |
 | 6 | Tracking and messaging | devices visible, breadcrumbs stored, per-device track, chat stored and a message deleted through `DELETE /api/chat?id=` (operator denied, unknown id 404, no args 400), 911 alert raised **and cleared** through `DELETE /api/alerts` (viewer denied, unknown uid 404), stats, live SSE event stream |
 | 7 | Cameras | register a camera path, list streams, recording on and off |

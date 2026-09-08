@@ -40,6 +40,7 @@ ENDPOINT_ROLES = {
     ("POST", "/api/users/role"): "admin",
     ("DELETE", "/api/users"): "admin",
     ("DELETE", "/api/devices"): "admin",
+    ("DELETE", "/api/alerts"): "operator",
     ("POST", "/api/chat"): "operator",
     ("POST", "/api/streams"): "operator",
     ("POST", "/api/streams/record"): "operator",
@@ -483,6 +484,36 @@ def make_handler(hub: Hub, store: Store, web_dir: str,
                         log.info("device %s removed by %s", uid,
                                  self.address_string())
                         self._json({"ok": True})
+                elif parsed.path == "/api/alerts":
+                    # Clearing from the web also cancels the alert on the
+                    # devices: ATAK keeps showing a 911 until it sees the
+                    # matching b-a-o-can, so a server-only clear would leave
+                    # every phone still alarming.
+                    from .cot import build_emergency_cancel
+                    q = parse_qs(parsed.query)
+                    all_flag = (q.get("all") or [""])[0].lower() in (
+                        "1", "true", "yes", "all")
+                    active = {a["uid"]: a for a in store.active_alerts()}
+                    if all_flag:
+                        targets = list(active)
+                    else:
+                        uid = (q.get("uid") or [""])[0]
+                        if not uid:
+                            self._json({"error": "uid or all=1 required"}, 400)
+                            return
+                        if uid not in active:
+                            self._json({"error": "no active alert with that uid"},
+                                       404)
+                            return
+                        targets = [uid]
+                    for uid in targets:
+                        store.clear_alert(uid)
+                        hub.broadcast_raw(build_emergency_cancel(
+                            uid, active[uid].get("callsign") or ""))
+                        hub._push_web({"kind": "alert_clear", "uid": uid})
+                    log.info("emergency cleared from the web UI: %s by %s",
+                             targets, self.address_string())
+                    self._json({"ok": True, "cleared": targets})
                 elif parsed.path == "/api/streams":
                     q = parse_qs(parsed.query)
                     target = (q.get("path") or [""])[0]

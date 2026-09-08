@@ -78,7 +78,7 @@ local run exercises the certificate files on disk.
 | 3 | Users and roles | create viewer + operator, viewer denied writes (403), operator allowed chat but denied user creation, last admin cannot be demoted (409), role change applies |
 | 4 | Enrollment | token issued, CSR signed by the Marti API, certificate verifies against the CA, `tls/config` + `version/config` + `clientEndPoints` answer, `enroll.zip` refused without a token and served with one, `mode=enroll` package, `ca.mobileconfig` for iTAK |
 | 5 | Devices over mTLS | two devices connect on 8089 with client certificates and report positions; plain TCP to that port is rejected |
-| 6 | Tracking and messaging | devices visible, breadcrumbs stored, per-device track, chat stored, 911 alert active, stats, live SSE event stream |
+| 6 | Tracking and messaging | devices visible, breadcrumbs stored, per-device track, chat stored, 911 alert raised **and cleared** through `DELETE /api/alerts` (viewer denied, unknown uid 404), stats, live SSE event stream |
 | 7 | Cameras | register a camera path, list streams, recording on and off |
 | 8 | Video ingest | publish over **RTSP**, **RTMP** and **SRT**, each read back with ffprobe to confirm the codec and resolution |
 | 9 | Publish authorization | publishing without `PUBLISH_TOKEN` is refused |

@@ -463,6 +463,30 @@ def main() -> int:
     ok(f"911 emergency active ({mine_alert[0].get('callsign')})") if mine_alert \
         else bad("emergency alert not recorded")
 
+    # Clearing an emergency from the web UI. The alert is keyed on the 911
+    # event's own uid (<device>-9-1-1), not the device uid, so deleting the
+    # device never clears it - the banner's X calls this endpoint.
+    if mine_alert:
+        auid = mine_alert[0]["uid"]
+        ok("alert uid differs from the device uid (needs its own control)") \
+            if auid not in created["devices"] else bad(f"unexpected alert uid {auid}")
+        # this session logged in while the account was still a viewer, and a
+        # session captures its role at login
+        code, _ = viewer.call(f"/api/alerts?uid={urllib.parse.quote(auid)}",
+                              method="DELETE")
+        ok("viewer denied clearing an emergency (403)") if code == 403 \
+            else bad(f"viewer clearing an alert returned {code}, expected 403")
+        code, _ = a.call("/api/alerts?uid=no-such-alert", method="DELETE")
+        ok("clearing an unknown alert returns 404") if code == 404 \
+            else bad(f"unknown alert clear returned {code}, expected 404")
+        code, r = a.call(f"/api/alerts?uid={urllib.parse.quote(auid)}",
+                         method="DELETE")
+        ok(f"emergency cleared via the API ({r.get('cleared') if isinstance(r, dict) else r})") \
+            if code == 200 else bad(f"clearing the alert returned {code} {r}")
+        code, alerts = a.call("/api/alerts")
+        still = [x for x in (alerts or []) if x.get("uid") == auid]
+        ok("alert no longer active") if not still else bad("alert still active after clear")
+
     code, stats = a.call("/api/stats")
     ok(f"stats endpoint OK ({stats})") if code == 200 else bad(f"/api/stats returned {code}")
 
@@ -686,6 +710,10 @@ def main() -> int:
             if p.poll() is None:
                 p.kill()
         time.sleep(1.0)
+        for al in (a.call("/api/alerts")[1] or []):
+            if TAG in str(al.get("callsign", "")) or TAG in str(al.get("uid", "")):
+                a.call(f"/api/alerts?uid={urllib.parse.quote(al['uid'])}",
+                       method="DELETE")
         for uid in created["devices"]:
             a.call(f"/api/devices?uid={urllib.parse.quote(uid)}", method="DELETE")
         for name in created["users"]:
@@ -699,6 +727,9 @@ def main() -> int:
         left_d = [d for d in (devs or []) if str(d.get("uid", "")).startswith(TAG)]
         code, users = a.call("/api/users")
         left_u = [u for u in (users or []) if str(u.get("username", "")).startswith(TAG)]
+        code, alerts = a.call("/api/alerts")
+        left_a = [x for x in (alerts or []) if TAG in str(x.get("uid", ""))]
+        ok("test alerts cleared") if not left_a else bad(f"alerts left behind: {left_a}")
         ok("test devices removed") if not left_d else bad(f"test devices left behind: {left_d}")
         ok("test users removed") if not left_u else bad(f"test users left behind: {left_u}")
 

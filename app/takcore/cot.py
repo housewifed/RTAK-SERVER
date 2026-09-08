@@ -223,6 +223,28 @@ def build_pong(ping_uid: str = "takcore-pong") -> bytes:
     ).encode()
 
 
+def build_emergency_cancel(uid: str, callsign: str = "") -> bytes:
+    """Build the CoT that cancels an emergency, so devices stop alerting too.
+
+    ATAK sends exactly this when a user cancels their own 911: type b-a-o-can
+    with cancel="true" on the emergency element. The web UI's "clear" button
+    broadcasts it under the alert's own uid, which is how the alert is keyed
+    everywhere (ATAK's 911 event carries its own uid, e.g. <device>-9-1-1).
+    """
+    now = datetime.now(timezone.utc)
+    stale = now + timedelta(minutes=1)
+    cs = _xml_escape(callsign or uid)
+    return (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<event version="2.0" uid="{_xml_escape(uid)}" type="b-a-o-can" '
+        f'how="h-g-i-g-o" time="{cot_time(now)}" start="{cot_time(now)}" '
+        f'stale="{cot_time(stale)}">'
+        f'<point lat="0.0" lon="0.0" hae="0.0" ce="9999999" le="9999999"/>'
+        f'<detail><emergency cancel="true">{cs}</emergency>'
+        f'<contact callsign="{cs}"/></detail></event>'
+    ).encode()
+
+
 def _xml_escape(s: str) -> str:
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             .replace('"', "&quot;"))

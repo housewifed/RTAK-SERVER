@@ -310,27 +310,76 @@ const alerts = new Map(); // uid -> alert
 
 function raiseAlert(a) {
   alerts.set(a.uid, a);
-  const banner = document.getElementById("alert-banner");
-  const names = [...alerts.values()]
-    .map((x) => `${x.callsign || x.uid} (${x.alert_type || "emergency"})`);
-  banner.textContent = "🚨 EMERGENCY: " + names.join("  •  ") + " — click to locate";
-  banner.hidden = false;
-  banner.onclick = () => {
-    const first = [...alerts.values()][0];
-    if (first && first.lat != null)
-      map.flyTo({ center: [first.lon, first.lat], zoom: 15 });
-  };
+  drawAlertBanner();
   const d = devices.get(a.uid);
   if (d) { d.alerting = true; refresh(); }
 }
 
+// One row per active emergency: the name locates it on the map, the X clears
+// it here AND cancels it on the devices (the server broadcasts b-a-o-can).
+function drawAlertBanner() {
+  const banner = document.getElementById("alert-banner");
+  banner.textContent = "";
+  banner.onclick = null;
+  if (alerts.size === 0) { banner.hidden = true; return; }
+
+  const label = document.createElement("span");
+  label.className = "alert-title";
+  label.textContent = "🚨 EMERGENCY:";
+  banner.appendChild(label);
+
+  for (const a of alerts.values()) {
+    const chip = document.createElement("span");
+    chip.className = "alert-chip";
+
+    const name = document.createElement("button");
+    name.type = "button";
+    name.className = "alert-locate";
+    name.textContent = `${a.callsign || a.uid} (${a.alert_type || "emergency"})`;
+    name.title = "Show on the map";
+    name.onclick = () => {
+      if (a.lat != null) map.flyTo({ center: [a.lon, a.lat], zoom: 15 });
+    };
+
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "alert-clear";
+    x.textContent = "✕";
+    x.title = "Clear this emergency (also cancels it on the devices)";
+    x.setAttribute("aria-label", `Clear the emergency for ${a.callsign || a.uid}`);
+    x.onclick = () => dismissAlert(a);
+
+    chip.append(name, x);
+    banner.appendChild(chip);
+  }
+  banner.hidden = false;
+}
+
+async function dismissAlert(a) {
+  const who = a.callsign || a.uid;
+  if (!confirm(`Clear the ${a.alert_type || "emergency"} from ${who}?\n\n` +
+               "This also tells the devices to stop alerting.")) return;
+  try {
+    const r = await fetch(`/api/alerts?uid=${encodeURIComponent(a.uid)}`,
+                          { method: "DELETE" });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert("Could not clear the emergency: " +
+            (e.error || `HTTP ${r.status}`));
+      return;
+    }
+    clearAlert(a.uid);   // the SSE alert_clear will arrive too; this is idempotent
+  } catch (err) {
+    alert("Could not clear the emergency: " + err.message);
+  }
+}
+
 function clearAlert(uid) {
+  if (!alerts.has(uid)) return;
   alerts.delete(uid);
   const d = devices.get(uid);
   if (d) { d.alerting = false; refresh(); }
-  const banner = document.getElementById("alert-banner");
-  if (alerts.size === 0) banner.hidden = true;
-  else raiseAlert([...alerts.values()][0]);
+  drawAlertBanner();
 }
 
 async function pollStreams() {

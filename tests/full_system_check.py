@@ -458,6 +458,25 @@ def main() -> int:
     ok(f"chat stored and readable ({len(hit)} test message(s))") if hit \
         else bad("chat message not stored")
 
+    # Chat deletion. Only ever delete by id here - ?all=1 would wipe the real
+    # history on a live server, so that path is left to the UI button.
+    if hit:
+        code, _ = operator.call("/api/chat?all=1", method="DELETE")
+        ok("operator denied clearing the chat (403)") if code == 403 \
+            else bad(f"operator clearing chat returned {code}, expected 403")
+        code, _ = a.call("/api/chat?id=999999", method="DELETE")
+        ok("deleting an unknown message returns 404") if code == 404 \
+            else bad(f"unknown message delete returned {code}, expected 404")
+        code, _ = a.call("/api/chat", method="DELETE")
+        ok("chat delete without arguments returns 400") if code == 400 \
+            else bad(f"argument-less chat delete returned {code}, expected 400")
+        victim = hit[0]
+        code, _ = a.call(f"/api/chat?id={victim['id']}", method="DELETE")
+        code, msgs = a.call("/api/chat")
+        gone = not any(m.get("id") == victim["id"] for m in (msgs or []))
+        ok("a single chat message can be deleted") if gone \
+            else bad("the message was still there after DELETE /api/chat?id=")
+
     code, alerts = a.call("/api/alerts")
     mine_alert = [x for x in (alerts or []) if TAG in str(x.get("callsign", ""))]
     ok(f"911 emergency active ({mine_alert[0].get('callsign')})") if mine_alert \
@@ -710,6 +729,9 @@ def main() -> int:
             if p.poll() is None:
                 p.kill()
         time.sleep(1.0)
+        for m in (a.call("/api/chat")[1] or []):
+            if TAG in str(m.get("message", "")) or TAG in str(m.get("sender", "")):
+                a.call(f"/api/chat?id={m['id']}", method="DELETE")
         for al in (a.call("/api/alerts")[1] or []):
             if TAG in str(al.get("callsign", "")) or TAG in str(al.get("uid", "")):
                 a.call(f"/api/alerts?uid={urllib.parse.quote(al['uid'])}",
@@ -738,6 +760,11 @@ def main() -> int:
         code, alerts = a.call("/api/alerts")
         left_a = [x for x in (alerts or []) if TAG in str(x.get("uid", ""))]
         ok("test alerts cleared") if not left_a else bad(f"alerts left behind: {left_a}")
+        code, msgs = a.call("/api/chat")
+        left_c = [m for m in (msgs or []) if TAG in str(m.get("message", ""))
+                  or TAG in str(m.get("sender", ""))]
+        ok("test chat messages removed") if not left_c \
+            else bad(f"chat messages left behind: {len(left_c)}")
         ok("test devices removed") if not left_d else bad(f"test devices left behind: {left_d}")
         ok("test users removed") if not left_u else bad(f"test users left behind: {left_u}")
 
@@ -750,7 +777,6 @@ def main() -> int:
         else:
             note("recordings for the test paths live under /var/lib/rtak/recordings "
                  "on the server - remove them there")
-        note("the 2 chat messages this run posted stay: there is no chat delete API")
 
     shutil.rmtree(work, ignore_errors=True)
     return report()

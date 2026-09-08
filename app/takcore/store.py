@@ -282,6 +282,23 @@ class Store:
             cols = [c[0] for c in cur.description]
             return [dict(zip(cols, r)) for r in reversed(cur.fetchall())]
 
+    def delete_chat(self, msg_id: int) -> bool:
+        """Remove one chat message. Returns True if a row existed."""
+        with self._lock:
+            cur = self._db.execute("DELETE FROM chat WHERE id = ?", (msg_id,))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def clear_chat(self) -> int:
+        """Remove every chat message. Returns how many were removed. Chat has
+        no retention sweep (unlike positions), so this is the only way history
+        ever shrinks."""
+        with self._lock:
+            n = self._db.execute("SELECT COUNT(*) FROM chat").fetchone()[0]
+            self._db.execute("DELETE FROM chat")
+            self._db.commit()
+            return n
+
     # -- alerts ----------------------------------------------------------------
 
     def raise_alert(self, uid: str, callsign: Optional[str],

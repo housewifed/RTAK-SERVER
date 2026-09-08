@@ -183,7 +183,7 @@ function showUserChip(me) {
   bar.appendChild(out);
   // hide admin-only controls for non-admins
   if (me.role !== "admin") {
-    for (const id of ["enroll-btn", "users-btn", "devices-btn"]) {
+    for (const id of ["enroll-btn", "users-btn", "devices-btn", "chat-clear"]) {
       const b = document.getElementById(id);
       if (b) b.style.display = "none";
     }
@@ -212,6 +212,10 @@ function connectSSE() {
       clearAllDevicesLocal();
     } else if (d.kind === "chat") {
       addChatMessage(d);
+    } else if (d.kind === "chat_cleared") {
+      clearChatLocal();
+    } else if (d.kind === "chat_removed") {
+      chatSeen.delete(d.id);
     } else if (d.kind === "alert") {
       raiseAlert(d);
     } else if (d.kind === "alert_clear") {
@@ -292,6 +296,33 @@ document.getElementById("chat-btn").onclick = () => {
 };
 document.getElementById("chat-close").onclick = () =>
   (document.getElementById("chat-panel").hidden = true);
+
+// Chat has no retention sweep, so without this the log only ever grows.
+// Admin-only, and it deletes for everyone - hence the count in the prompt.
+const chatClearBtn = document.getElementById("chat-clear");
+if (chatClearBtn) chatClearBtn.onclick = async () => {
+  const n = document.getElementById("chat-log").childElementCount;
+  if (!confirm(`Delete all ${n} chat message(s)?\n\n` +
+               "This clears the history for everyone and cannot be undone.")) return;
+  try {
+    const r = await fetch("/api/chat?all=1", { method: "DELETE" });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert("Could not clear the chat: " + (e.error || `HTTP ${r.status}`));
+      return;
+    }
+    clearChatLocal();
+  } catch (err) {
+    alert("Could not clear the chat: " + err.message);
+  }
+};
+
+function clearChatLocal() {
+  document.getElementById("chat-log").textContent = "";
+  chatSeen.clear();
+  chatUnread = 0;
+  updateChatBadge();
+}
 document.getElementById("chat-form").onsubmit = async (e) => {
   e.preventDefault();
   const input = document.getElementById("chat-input");

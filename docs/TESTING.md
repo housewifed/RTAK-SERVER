@@ -78,7 +78,7 @@ local run exercises the certificate files on disk.
 | 3 | Users and roles | create viewer + operator, viewer denied writes (403), operator allowed chat but denied user creation, last admin cannot be demoted (409), role change applies |
 | 4 | Enrollment | token issued, CSR signed by the Marti API, certificate verifies against the CA, `tls/config` + `version/config` + `clientEndPoints` answer, `enroll.zip` refused without a token and served with one, `mode=enroll` package, `ca.mobileconfig` for iTAK |
 | 5 | Devices over mTLS | two devices connect on 8089 with client certificates and report positions; plain TCP to that port is rejected |
-| 6 | Tracking and messaging | devices visible, breadcrumbs stored, per-device track, chat stored, 911 alert raised **and cleared** through `DELETE /api/alerts` (viewer denied, unknown uid 404), stats, live SSE event stream |
+| 6 | Tracking and messaging | devices visible, breadcrumbs stored, per-device track, chat stored and a message deleted through `DELETE /api/chat?id=` (operator denied, unknown id 404, no args 400), 911 alert raised **and cleared** through `DELETE /api/alerts` (viewer denied, unknown uid 404), stats, live SSE event stream |
 | 7 | Cameras | register a camera path, list streams, recording on and off |
 | 8 | Video ingest | publish over **RTSP**, **RTMP** and **SRT**, each read back with ffprobe to confirm the codec and resolution |
 | 9 | Publish authorization | publishing without `PUBLISH_TOKEN` is refused |
@@ -124,9 +124,14 @@ A `h264 320x240` stream in the output means SRT ingest works.
 ### Safety
 
 The script only ever deletes what it created — every object it makes is named
-`fullcheck-*`. It performs no bulk device wipe and never edits the database
-directly, so it is safe to run against a server with real devices enrolled.
-Use `--keep` if you want to inspect the objects afterwards.
+`fullcheck-*`, including the chat messages, which it removes one id at a time.
+It performs no bulk device wipe, never calls `DELETE /api/chat?all=1`, and never
+edits the database directly, so it is safe to run against a server with real
+devices and real chat history. Use `--keep` to inspect the objects afterwards.
+
+The one thing it cannot remove when run remotely is the recordings it makes:
+delete `/var/lib/rtak/recordings/fullcheck-*` on the server, or run the script
+there, where it cleans them up itself.
 
 ## 3. Install check (container)
 

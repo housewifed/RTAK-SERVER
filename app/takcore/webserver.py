@@ -41,6 +41,7 @@ ENDPOINT_ROLES = {
     ("DELETE", "/api/users"): "admin",
     ("DELETE", "/api/devices"): "admin",
     ("DELETE", "/api/alerts"): "operator",
+    ("DELETE", "/api/chat"): "admin",
     ("POST", "/api/chat"): "operator",
     ("POST", "/api/streams"): "operator",
     ("POST", "/api/streams/record"): "operator",
@@ -484,6 +485,26 @@ def make_handler(hub: Hub, store: Store, web_dir: str,
                         log.info("device %s removed by %s", uid,
                                  self.address_string())
                         self._json({"ok": True})
+                elif parsed.path == "/api/chat":
+                    q = parse_qs(parsed.query)
+                    all_flag = (q.get("all") or [""])[0].lower() in (
+                        "1", "true", "yes", "all")
+                    if all_flag:
+                        n = store.clear_chat()
+                        hub._push_web({"kind": "chat_cleared"})
+                        log.info("chat history cleared (%d messages) by %s",
+                                 n, self.address_string())
+                        self._json({"ok": True, "removed": n})
+                        return
+                    mid = (q.get("id") or [""])[0]
+                    if not mid.isdigit():
+                        self._json({"error": "id or all=1 required"}, 400)
+                        return
+                    if not store.delete_chat(int(mid)):
+                        self._json({"error": "no such message"}, 404)
+                        return
+                    hub._push_web({"kind": "chat_removed", "id": int(mid)})
+                    self._json({"ok": True})
                 elif parsed.path == "/api/alerts":
                     # Clearing from the web also cancels the alert on the
                     # devices: ATAK keeps showing a 911 until it sees the

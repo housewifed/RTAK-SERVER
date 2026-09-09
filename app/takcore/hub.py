@@ -94,12 +94,36 @@ class Hub:
             return True
         owner = self._uid_owner.get(ev.uid)
         if owner is not None and owner is not origin:
-            log.warning("spoof rejected: self-position for %s from %s (cn=%s) "
-                        "already owned by %s (cn=%s)", ev.uid, origin.peer,
-                        origin.cn, owner.peer, owner.cn)
-            return False
+            # A phone that changes network (Wi-Fi -> cellular) reconnects from
+            # a new address while the old socket lingers as a zombie ESTAB, so
+            # the binding cannot be the socket: identity is what the client
+            # certificate proves. The same CN reclaims its own uid; a different
+            # one - or no certificate at all, where nothing is proven - does
+            # not. Without this the device is locked out of reporting its own
+            # position until the dead socket is reaped, which can take hours.
+            if not (origin.cn and origin.cn == owner.cn):
+                log.warning("spoof rejected: self-position for %s from %s "
+                            "(cn=%s) already owned by %s (cn=%s)", ev.uid,
+                            origin.peer, origin.cn, owner.peer, owner.cn)
+                return False
+            log.info("uid %s reclaimed by %s (cn=%s); dropping the superseded "
+                     "session from %s", ev.uid, origin.peer, origin.cn,
+                     owner.peer)
+            self._evict(owner)
         self._uid_owner[ev.uid] = origin
         return True
+
+    def _evict(self, session: TakSession) -> None:
+        """Drop a session that the same device has superseded. Deliberately not
+        unregister(): that would announce the device offline to the web at the
+        moment it is coming back."""
+        self.sessions.discard(session)
+        for uid in [u for u, s in self._uid_owner.items() if s is session]:
+            del self._uid_owner[uid]
+        try:
+            session.writer.close()
+        except Exception:  # noqa: BLE001
+            log.debug("closing superseded session failed", exc_info=True)
 
     def publish(self, ev: CotEvent, origin: Optional[TakSession]) -> None:
         """Handle one parsed event from a device (or internal source)."""

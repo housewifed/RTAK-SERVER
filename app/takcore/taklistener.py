@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import ssl
 from typing import Optional
 
@@ -24,10 +25,37 @@ def cn_from_peercert(cert: Optional[dict]) -> Optional[str]:
     return None
 
 
+def _enable_keepalive(writer: asyncio.StreamWriter) -> None:
+    """Ask the kernel to probe idle CoT connections.
+
+    A phone that changes network or loses signal never sends a FIN, so its
+    socket sits in ESTABLISHED on this side indefinitely - the default probe
+    only starts after 2 hours. Those zombies pile up and, worse, keep holding
+    device state. Probe after 60s idle, every 15s, and give up after 4 misses,
+    so a vanished device is reaped in about two minutes.
+    """
+    sock = writer.get_extra_info("socket")
+    if sock is None:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for opt, value in (("TCP_KEEPIDLE", 60), ("TCP_KEEPINTVL", 15),
+                           ("TCP_KEEPCNT", 4)):
+            # TCP_KEEPIDLE is Linux; macOS spells it TCP_KEEPALIVE
+            name = getattr(socket, opt, None)
+            if name is None and opt == "TCP_KEEPIDLE":
+                name = getattr(socket, "TCP_KEEPALIVE", None)
+            if name is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, name, value)
+    except OSError:
+        log.debug("could not enable TCP keepalive on %s", writer, exc_info=True)
+
+
 async def _handle(hub: Hub, reader: asyncio.StreamReader,
                   writer: asyncio.StreamWriter) -> None:
     peername = writer.get_extra_info("peername")
     peer = f"{peername[0]}:{peername[1]}" if peername else "?"
+    _enable_keepalive(writer)
     session = TakSession(writer, peer)
     ssl_object = writer.get_extra_info("ssl_object")
     if ssl_object is not None:

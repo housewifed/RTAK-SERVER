@@ -418,6 +418,29 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             bad(f"{uid} could not connect: {e}")
 
+    # Roaming: a phone that changes network (Wi-Fi -> cellular) reconnects
+    # from a new address while the old socket is still ESTABLISHED on the
+    # server. It must be able to reclaim its own uid - identity is what the
+    # client certificate proves, not the socket - or it silently stops
+    # reporting until the dead socket is reaped, which can take hours.
+    if socks:
+        roam_uid = devices[0][0]
+        try:
+            s2 = ctx2.wrap_socket(socket.create_connection((mhost, args.cot_port),
+                                                           timeout=15))
+            socks.append(s2)                      # the first socket stays open
+            s2.sendall(sa(roam_uid, roam_uid, 51.5074, -0.1278))
+            time.sleep(2.5)
+            code, devs = a.call("/api/devices")
+            moved = next((d for d in (devs or []) if d.get("uid") == roam_uid), None)
+            if moved and abs((moved.get("lat") or 0) - 51.5074) < 0.01:
+                ok("a device reconnecting from a new socket keeps reporting")
+            else:
+                bad(f"position from the reconnected session was dropped "
+                    f"(device still at {moved and moved.get('lat')})")
+        except Exception as e:  # noqa: BLE001
+            bad(f"reconnect from a second socket failed: {e}")
+
     try:
         plain = socket.create_connection((mhost, args.cot_port), timeout=8)
         plain.sendall(b"<event/>")

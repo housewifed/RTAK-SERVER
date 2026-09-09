@@ -170,6 +170,29 @@ ERROR: port 8080 is already in use by another program - python3 (pid 557)
 
 and `NRestarts` stays at 0 — a crash loop means the check regressed.
 
+### Checking the phone streaming deep links
+
+The ICU / Larix setup QRs are built in the browser, so no server-side test
+covers them. Open a device popup with no live video, press the QR button and
+compare against these shapes (the token is `PUBLISH_TOKEN` from `rtak.env`):
+
+| App | What the link must contain |
+|---|---|
+| Larix RTMP/RTSP | `conn[][url]=rtmp://<host>:1935/<path>?token=<TOKEN>` — **no** `user:pass@` in the url |
+| Larix SRT | `conn[][url]=srt://<host>:8890` plus `conn[][srtstreamid]=publish:<path>:publisher:<TOKEN>` |
+| OpenTAK ICU | `opentakicu://import?protocol=…&address=…&port=…&path=…&username=publisher&password=<TOKEN>` |
+
+Larix refuses any url carrying user info ("User information is found in URL")
+and silently drops the connection, and its Login/Password fields drive RTMP's
+own auth handshake, which MediaMTX does not implement — hence the query token.
+
+To prove the URL form itself works, publish to it with ffmpeg:
+
+```bash
+ffmpeg -re -f lavfi -i testsrc=size=320x240:rate=15 -c:v libx264 -f flv   "rtmp://<host>:1935/live/TEST?token=<TOKEN>"
+ffprobe -v error -show_entries stream=codec_name rtsp://<host>:8554/live/TEST
+```
+
 ## What no script covers
 
 - **The browser UI.** Log in, confirm the map draws, a device moves, chat sends,

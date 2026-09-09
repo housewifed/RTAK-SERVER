@@ -574,14 +574,19 @@ function labelForPath(path) {
   return (d && (d.callsign || d.uid)) || path;
 }
 
-function publishUrl(proto, host, path) {
+// withCreds=false gives the bare URL. Larix REFUSES a url containing user
+// info ("User information is found in URL. Please fill in Login and Password
+// input fields") and drops the imported connection, so its Grove link must get
+// a clean URL plus conn[][user]/conn[][pass]. The human-readable hint keeps the
+// credentials inline, where they are useful to copy.
+function publishUrl(proto, host, path, withCreds = true) {
   const t = publishTokenCache;
   if (proto === "srt") {
     // MediaMTX SRT auth reads user/pass from the streamid.
     const sid = t ? `publish:${path}:${PUBLISH_USER}:${t}` : `publish:${path}`;
     return `srt://${host}:8890?streamid=${sid}`;
   }
-  const auth = t ? `${PUBLISH_USER}:${t}@` : "";
+  const auth = (withCreds && t) ? `${PUBLISH_USER}:${t}@` : "";
   return `${proto}://${auth}${host}:${ICU_PORTS[proto]}/${path}`;
 }
 
@@ -628,12 +633,16 @@ function larixGroveUrl(proto, host, path) {
     const sid = t ? `publish:${path}:${PUBLISH_USER}:${t}` : `publish:${path}`;
     parts.push(`conn[][srtstreamid]=${encodeURIComponent(sid)}`);
   } else {
-    // RTMP/RTSP DO support user/pass auth in Larix, so set the dedicated auth
-    // fields (publishUrl() also embeds user:pass@ in the URL as a backup).
-    // SRT has NO user/pass concept — Larix rejects conn[][user]/[pass] for it
-    // ("User/pass authentication is not supported"), so SRT creds ride in the
-    // streamid above instead of here.
-    parts.splice(1, 0, `conn[][url]=${encodeURIComponent(publishUrl(proto, host, path))}`);
+    // Two constraints meet here. Larix rejects a url containing user:pass@
+    // ("User information is found in URL") and drops the connection. And for
+    // RTMP its Login/Password fields drive RTMP's own auth handshake, which
+    // MediaMTX does not implement - so credentials sent only that way never
+    // reach our auth hook. The query token is the form proven to publish
+    // against this server (it is what the ingest test uses), and MediaMTX
+    // passes the query through to the hook for both RTMP and RTSP.
+    const clean = publishUrl(proto, host, path, false);
+    const withToken = t ? `${clean}?token=${encodeURIComponent(t)}` : clean;
+    parts.splice(1, 0, `conn[][url]=${encodeURIComponent(withToken)}`);
     if (t) {
       parts.push(`conn[][user]=${encodeURIComponent(PUBLISH_USER)}`);
       parts.push(`conn[][pass]=${encodeURIComponent(t)}`);

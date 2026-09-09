@@ -76,6 +76,22 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 #roster li .cs { font-weight: 600; }
 #roster li .meta { margin-left: auto; color: var(--muted); font-size: 11px; }
 #roster li.stale { opacity: .45; }
+/* follow toggle: keep the map centred on this device */
+#roster li .follow-btn {
+  flex: none; background: none; border: 1px solid transparent;
+  color: var(--muted); font: inherit; font-size: 13px; line-height: 1;
+  padding: 2px 5px; border-radius: 6px; cursor: pointer;
+}
+#roster li .follow-btn:hover:not(:disabled) {
+  color: var(--text); background: rgba(255, 255, 255, .08);
+}
+#roster li .follow-btn.on { color: var(--accent); border-color: var(--accent); }
+#roster li .follow-btn:disabled { opacity: .3; cursor: default; }
+#roster li .follow-btn:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+/* the followed row stays recognisable while scrolling the list */
+#roster li.following { background: rgba(63, 182, 255, .15); }
 
 /* CoT-style popup */
 .maplibregl-popup-content {
@@ -85,6 +101,16 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
   font-family: inherit;
 }
 .maplibregl-popup-tip { border-top-color: var(--panel) !important; }
+.popup .pop-follow {
+  margin-top: 8px; width: 100%; padding: 5px 8px; font: inherit; font-size: 12px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  border: 1px solid #2a3441; border-radius: 6px;
+}
+.popup .pop-follow:hover { color: var(--text); border-color: var(--accent); }
+.popup .pop-follow.on {
+  color: var(--accent); border-color: var(--accent);
+  background: rgba(63, 182, 255, .12);
+}
 .maplibregl-popup-close-button { color: var(--muted); font-size: 16px; }
 
 .popup h3 { margin: 0 0 6px; font-size: 15px; }

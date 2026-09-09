@@ -229,6 +229,7 @@ function connectSSE() {
 let devicesPanelRefresh = null;   // set while the Devices panel is open
 
 function removeDeviceLocal(uid) {
+  if (followUid === uid) stopFollow();
   devices.delete(uid);
   streamsByDevice.delete(uid);
   if (alerts.has(uid)) clearAlert(uid);
@@ -237,6 +238,7 @@ function removeDeviceLocal(uid) {
 }
 
 function clearAllDevicesLocal() {
+  stopFollow();
   devices.clear();
   streamsByDevice.clear();
   alerts.clear();
@@ -462,6 +464,67 @@ function refresh() {
   if (playbackMode) return; // playback controls the map source
   const src = map.getSource("devices");
   if (src) src.setData(featureCollection());
+  keepFollowedCentred();
+  anchorPopup();
+}
+
+// ------------------------------------------------------------------ follow
+
+// One device at a time. The map re-centres on it as its positions arrive; the
+// user dragging the map turns this off, so the map never fights the mouse.
+let followUid = null;
+let followedAt = null;      // last centre we eased to, so a static device is left alone
+let followZoomTarget = null; // zoom to apply on the first move after switching on
+
+function isFollowing(uid) { return followUid === uid; }
+
+function toggleFollow(uid) {
+  if (followUid === uid) { stopFollow(); return; }
+  followUid = uid;
+  followedAt = null;
+  const d = devices.get(uid);
+  if (d && d.lat != null) {
+    followedAt = [d.lon, d.lat];
+    // easeTo, not flyTo: flyTo's curved animation runs for seconds and the next
+    // position update (2s later) cancels it mid-flight, so the zoom-in never
+    // landed. The target is also carried into that next move, in case a
+    // position arrives before this one finishes.
+    followZoomTarget = Math.max(map.getZoom(), 15);
+    map.easeTo({ center: [d.lon, d.lat], zoom: followZoomTarget, duration: 600 });
+  }
+  renderRoster();
+  syncPopupFollowBtn();
+}
+
+function stopFollow() {
+  if (followUid === null) return;
+  followUid = null;
+  followedAt = null;
+  followZoomTarget = null;
+  renderRoster();
+  syncPopupFollowBtn();
+}
+
+function keepFollowedCentred() {
+  if (!followUid) return;
+  const d = devices.get(followUid);
+  if (!d || d.lat == null) return;
+  // Skip when it has not actually moved, so a parked device does not make the
+  // map twitch on every keep-alive position.
+  if (followedAt && followedAt[0] === d.lon && followedAt[1] === d.lat) return;
+  followedAt = [d.lon, d.lat];
+  const move = { center: [d.lon, d.lat], duration: 700 };
+  if (followZoomTarget !== null) {
+    move.zoom = followZoomTarget;   // finish the zoom-in, then leave zoom alone
+    followZoomTarget = null;
+  }
+  map.easeTo(move);
+}
+
+// Dragging (or rotating/pitching) the map is the user taking over. Zooming is
+// not - you often zoom in to watch a device more closely.
+for (const ev of ["dragstart", "rotatestart", "pitchstart"]) {
+  map.on(ev, () => stopFollow());
 }
 
 // ------------------------------------------------------------- WHEP video
@@ -908,6 +971,8 @@ async function openPopup(uid) {
   popupUid = uid;
   stopPopupRetry();
   popup.setLngLat([d.lon, d.lat]).setHTML(popupHtml(d)).addTo(map);
+  const followBtn = document.getElementById("pop-follow");
+  if (followBtn) followBtn.onclick = () => toggleFollow(uid);
 
   // Resolve the publish host up front, then the single guard below covers all
   // awaits — after it, rendering is synchronous and cannot race a popup close
@@ -1048,20 +1113,50 @@ async function toggleRecordings(slot, path, video, status) {
   });
 }
 
+// Move the open popup with its device, and refresh the values that go stale.
+// Deliberately NOT setHTML: that would rebuild the video slot and kill a live
+// WebRTC stream mid-playback.
+function anchorPopup() {
+  if (!popupUid) return;
+  const d = devices.get(popupUid);
+  if (!d || d.lat == null) return;
+  popup.setLngLat([d.lon, d.lat]);
+  const set = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  set("pop-pos", `${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}`);
+  set("pop-speed", d.speed != null ? `${(d.speed * 3.6).toFixed(1)} km/h` : "—");
+  set("pop-seen", d.lastSeen
+    ? `${Math.round((Date.now() - d.lastSeen) / 1000)} s ago` : "—");
+}
+
+function syncPopupFollowBtn() {
+  const btn = document.getElementById("pop-follow");
+  if (!btn) return;
+  const on = isFollowing(popupUid);
+  btn.classList.toggle("on", on);
+  btn.textContent = on ? "⦿ Following" : "⦿ Follow";
+}
+
 function popupHtml(d) {
   const speed = d.speed != null ? `${(d.speed * 3.6).toFixed(1)} km/h` : "—";
   const seen = d.lastSeen ? `${Math.round((Date.now() - d.lastSeen) / 1000)} s ago` : "—";
+  const following = isFollowing(d.uid);
   return `
     <div class="popup">
       <h3>${escapeHtml(d.callsign || d.uid)}</h3>
       <table>
         <tr><td>Team</td><td>${escapeHtml(d.team)} ${escapeHtml(d.role || "")}</td></tr>
-        <tr><td>Position</td><td>${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}</td></tr>
-        <tr><td>Speed</td><td>${speed}</td></tr>
+        <tr><td>Position</td><td id="pop-pos">${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}</td></tr>
+        <tr><td>Speed</td><td id="pop-speed">${speed}</td></tr>
         <tr><td>Device</td><td>${escapeHtml(d.device || d.platform)}</td></tr>
         <tr><td>Battery</td><td>${d.battery != null ? d.battery + " %" : "—"}</td></tr>
-        <tr><td>Last seen</td><td>${seen}</td></tr>
+        <tr><td>Last seen</td><td id="pop-seen">${seen}</td></tr>
       </table>
+      <button id="pop-follow" class="pop-follow${following ? " on" : ""}"
+              title="Keep the map centred on this device">${
+                following ? "⦿ Following" : "⦿ Follow"}</button>
       <div id="popup-video-slot">
         <div class="video-slot">checking for live video…</div>
       </div>
@@ -1083,6 +1178,7 @@ function renderRoster() {
   for (const d of sorted) {
     const li = document.createElement("li");
     if (isStale(d) && d.platform !== "camera") li.classList.add("stale");
+    if (isFollowing(d.uid)) li.classList.add("following");
     const dot = document.createElement("span");
     dot.className = "dot";
     dot.style.background = d.platform === "camera"
@@ -1093,7 +1189,18 @@ function renderRoster() {
     const meta = document.createElement("span");
     meta.className = "meta";
     meta.textContent = d.role || d.platform || "";
-    li.append(dot, cs, meta);
+    const follow = document.createElement("button");
+    follow.className = "follow-btn" + (isFollowing(d.uid) ? " on" : "");
+    follow.textContent = "⦿";
+    follow.title = isFollowing(d.uid)
+      ? "Stop following this device" : "Keep the map centred on this device";
+    follow.setAttribute("aria-pressed", isFollowing(d.uid) ? "true" : "false");
+    follow.onclick = (e) => {
+      e.stopPropagation();          // not the row's fly-to + popup
+      toggleFollow(d.uid);
+    };
+    if (d.lat == null) follow.disabled = true;
+    li.append(dot, cs, meta, follow);
     li.onclick = () => {
       map.flyTo({ center: [d.lon, d.lat], zoom: Math.max(map.getZoom(), 14) });
       openPopup(d.uid);

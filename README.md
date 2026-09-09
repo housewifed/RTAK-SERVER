@@ -7,6 +7,8 @@ OpenSSL. Everything it needs is inside the installer.
 It is the same server as the Docker build, packaged to run natively:
 
 - **Live map** with device tracking, breadcrumbs and playback
+- **Follow a device**: the map stays centred on it as it moves, and its popup
+  (live video included) travels with it
 - **Chat** and **911 emergency** alerts
 - **Certificate enrollment** for ATAK/iTAK (Marti API) over mTLS
 - **Video**: RTSP / RTMP / SRT ingest, WebRTC playback, recording
@@ -22,9 +24,9 @@ and run it:
 
 ```bash
 # normal PC / server (uname -m says x86_64)
-wget https://github.com/housewifed/RTAK-SERVER/releases/download/v1.0.6/rtak-server-1.0.6-linux-amd64.run
-chmod +x rtak-server-1.0.6-linux-amd64.run
-sudo ./rtak-server-1.0.6-linux-amd64.run
+wget https://github.com/housewifed/RTAK-SERVER/releases/download/v1.0.7/rtak-server-1.0.7-linux-amd64.run
+chmod +x rtak-server-1.0.7-linux-amd64.run
+sudo ./rtak-server-1.0.7-linux-amd64.run
 ```
 
 On a Raspberry Pi 5 / ARM machine (`uname -m` says `aarch64`) use the
@@ -37,7 +39,7 @@ them at boot, and prints your admin password.
 Non-interactive:
 
 ```bash
-sudo ./rtak-server-1.0.6-linux-amd64.run --yes --host rtak.example.com
+sudo ./rtak-server-1.0.7-linux-amd64.run --yes --host rtak.example.com
 ```
 
 **Already running something on 8080 or 80?** SABnzbd, Home Assistant, Nextcloud
@@ -45,7 +47,7 @@ and Jenkins all like those ports. Tell the installer which ones are free instead
 — nothing else has to move:
 
 ```bash
-sudo ./rtak-server-1.0.6-linux-amd64.run --yes --host rtak.example.com \
+sudo ./rtak-server-1.0.7-linux-amd64.run --yes --host rtak.example.com \
      --http-port 8081 --caddy-http-port 8880
 ```
 

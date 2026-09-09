@@ -44,8 +44,8 @@ ip link | grep ether
 Copy the installer to the machine (USB stick, or `scp` from your laptop), then:
 
 ```bash
-chmod +x rtak-server-1.0.6-linux-amd64.run
-sudo ./rtak-server-1.0.6-linux-amd64.run
+chmod +x rtak-server-1.0.7-linux-amd64.run
+sudo ./rtak-server-1.0.7-linux-amd64.run
 ```
 
 Use the **amd64** file for a normal PC, **arm64** for a Raspberry Pi 5 or ARM VM.
@@ -167,7 +167,7 @@ The installer refuses to start on an occupied web port and tells you so. Pick
 another one at install time:
 
 ```bash
-sudo ./rtak-server-1.0.6-linux-amd64.run --yes --http-port 8081
+sudo ./rtak-server-1.0.7-linux-amd64.run --yes --http-port 8081
 ```
 
 or afterwards, in `/etc/rtak/rtak.env`:

@@ -60,17 +60,93 @@ const map = new maplibregl.Map({
         tileSize: 256,
         attribution: "© OpenStreetMap contributors",
       },
+      sat: {
+        type: "raster",
+        tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/"
+                + "World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+      },
+      // Satellite imagery carries no place names or road names, which makes it
+      // hard to talk about ("meet me at…"), so this transparent reference layer
+      // rides on top of it.
+      satlabels: {
+        type: "raster",
+        tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/"
+                + "Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: "Esri",
+      },
     },
+    // Order matters: every basemap layer is declared before the device layers
+    // are added on load, so devices and trails always draw on top.
     layers: [
       { id: "bg", type: "background", paint: { "background-color": "#10151c" } },
       { id: "osm", type: "raster", source: "osm",
         paint: { "raster-brightness-max": 0.75, "raster-saturation": -0.35 } },
+      { id: "sat", type: "raster", source: "sat",
+        layout: { visibility: "none" } },
+      { id: "satlabels", type: "raster", source: "satlabels",
+        layout: { visibility: "none" }, paint: { "raster-opacity": 0.9 } },
     ],
   },
 });
 map.addControl(new maplibregl.NavigationControl(), "bottom-right");
 
+// ------------------------------------------------------------- basemap
+
+// Street is the dimmed OSM the dark UI was built around; Plain is the same
+// tiles at full brightness for when you actually need to read the map; Satellite
+// is imagery with a transparent names overlay. Switching flips layer visibility
+// rather than calling setStyle, which would drop the device and trail layers.
+const BASEMAPS = {
+  street: { label: "Street", layers: ["osm"],
+            paint: { "raster-brightness-max": 0.75, "raster-saturation": -0.35 } },
+  plain:  { label: "Plain", layers: ["osm"],
+            paint: { "raster-brightness-max": 1, "raster-saturation": 0 } },
+  satellite: { label: "Satellite", layers: ["sat", "satlabels"] },
+};
+const BASEMAP_KEY = "takBasemap";
+let basemap = "street";
+
+function applyBasemap(name) {
+  const cfg = BASEMAPS[name];
+  if (!cfg || !map.getLayer("osm")) return;
+  basemap = name;
+  for (const id of ["osm", "sat", "satlabels"]) {
+    map.setLayoutProperty(id, "visibility",
+      cfg.layers.includes(id) ? "visible" : "none");
+  }
+  // Street and Plain share one raster source, so the dimming is a paint change.
+  const paint = cfg.paint || BASEMAPS.street.paint;
+  map.setPaintProperty("osm", "raster-brightness-max", paint["raster-brightness-max"]);
+  map.setPaintProperty("osm", "raster-saturation", paint["raster-saturation"]);
+  try { localStorage.setItem(BASEMAP_KEY, name); } catch { /* private mode */ }
+  document.querySelectorAll("#basemap button").forEach((b) => {
+    const on = b.dataset.base === name;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
+}
+
+function initBasemapSwitch() {
+  const el = document.getElementById("basemap");
+  if (!el) return;
+  el.innerHTML = Object.entries(BASEMAPS).map(([k, v]) =>
+    `<button type="button" role="radio" data-base="${k}"
+             aria-checked="false">${v.label}</button>`).join("");
+  el.querySelectorAll("button").forEach((b) => {
+    b.onclick = () => applyBasemap(b.dataset.base);
+  });
+  let saved = "street";
+  try { saved = localStorage.getItem(BASEMAP_KEY) || "street"; } catch { /* ignore */ }
+  applyBasemap(BASEMAPS[saved] ? saved : "street");
+}
+
 map.on("load", () => {
+  initBasemapSwitch();
   map.addSource("devices", { type: "geojson", data: featureCollection() });
 
   map.addLayer({

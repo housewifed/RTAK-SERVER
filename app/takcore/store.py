@@ -8,6 +8,7 @@ rest of the server.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -72,6 +73,15 @@ CREATE TABLE IF NOT EXISTS alerts (
     cleared    REAL
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_uid ON alerts (uid);
+CREATE TABLE IF NOT EXISTS track_sessions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT,
+    devices    TEXT NOT NULL,   -- JSON array of uids; [] means every device
+    started    REAL NOT NULL,
+    ended      REAL,            -- NULL while still recording
+    created_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_track_started ON track_sessions (started);
 CREATE TABLE IF NOT EXISTS users (
     username  TEXT PRIMARY KEY,
     pw_hash   TEXT NOT NULL,
@@ -155,15 +165,29 @@ class Store:
             cols = [c[0] for c in cur.description]
             return dict(zip(cols, row))
 
-    def history(self, minutes: float = 60.0,
-                max_rows: int = 20000) -> List[Dict[str, Any]]:
-        """All device positions within the last `minutes`, oldest first —
-        the source for track playback."""
-        since = time.time() - minutes * 60
+    def history(self, minutes: float = 60.0, max_rows: int = 20000,
+                since: Optional[float] = None, until: Optional[float] = None,
+                uids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Positions in a window, oldest first — the source for playback.
+
+        `minutes` is the simple "last N minutes" form; `since`/`until`/`uids`
+        replay an arbitrary window for a chosen set of devices, which is what a
+        recorded session and the custom-range picker need.
+        """
+        if since is None:
+            since = time.time() - minutes * 60
+        sql = "SELECT uid, ts, lat, lon FROM positions WHERE ts >= ?"
+        args: List[Any] = [since]
+        if until is not None:
+            sql += " AND ts <= ?"
+            args.append(until)
+        if uids:
+            sql += f" AND uid IN ({','.join('?' * len(uids))})"
+            args.extend(uids)
+        sql += " ORDER BY ts ASC LIMIT ?"
+        args.append(max_rows)
         with self._lock:
-            cur = self._db.execute(
-                "SELECT uid, ts, lat, lon FROM positions WHERE ts >= ? "
-                "ORDER BY ts ASC LIMIT ?", (since, max_rows))
+            cur = self._db.execute(sql, args)
             return [{"uid": r[0], "ts": r[1], "lat": r[2], "lon": r[3]}
                     for r in cur.fetchall()]
 
@@ -216,10 +240,98 @@ class Store:
             return 0
         cutoff = time.time() - max_age_days * 86400
         with self._lock:
-            cur = self._db.execute(
-                "DELETE FROM positions WHERE ts < ?", (cutoff,))
+            # Keeping a recording is a statement that those points matter, so
+            # retention steps around every saved session's window. A session
+            # with devices=[] covers whatever device was reporting then.
+            keep = []
+            keep_args: List[Any] = []
+            for sid, devices_json, started, ended in self._db.execute(
+                    "SELECT id, devices, started, ended FROM track_sessions"):
+                end = ended if ended is not None else time.time()
+                try:
+                    uids = json.loads(devices_json)
+                except (TypeError, ValueError):
+                    uids = []
+                clause = "(ts BETWEEN ? AND ?"
+                keep_args.extend([started, end])
+                if uids:
+                    clause += f" AND uid IN ({','.join('?' * len(uids))})"
+                    keep_args.extend(uids)
+                keep.append(clause + ")")
+            sql = "DELETE FROM positions WHERE ts < ?"
+            args: List[Any] = [cutoff]
+            if keep:
+                sql += " AND NOT (" + " OR ".join(keep) + ")"
+                args.extend(keep_args)
+            cur = self._db.execute(sql, args)
             self._db.commit()
             return cur.rowcount
+
+    # -- track sessions -------------------------------------------------------
+
+    def start_track_session(self, devices: List[str], name: Optional[str] = None,
+                            created_by: Optional[str] = None) -> Dict[str, Any]:
+        """Begin recording. An empty device list means every device, including
+        ones that connect later - that is what "select all" has to mean."""
+        started = time.time()
+        payload = json.dumps(list(devices or []))
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO track_sessions (name, devices, started, created_by)"
+                " VALUES (?,?,?,?)", (name or None, payload, started, created_by))
+            self._db.commit()
+            sid = cur.lastrowid
+        return {"id": sid, "name": name or None, "devices": list(devices or []),
+                "started": started, "ended": None, "recording": True,
+                "created_by": created_by}
+
+    def stop_track_session(self, session_id: int) -> bool:
+        """Close an open session. Stopping an already-stopped one is a no-op so
+        two browsers racing on the Stop button cannot move its end time."""
+        with self._lock:
+            cur = self._db.execute(
+                "UPDATE track_sessions SET ended = ? WHERE id = ? AND ended IS NULL",
+                (time.time(), session_id))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def delete_track_session(self, session_id: int) -> bool:
+        """Remove the bookmark. The positions it pointed at stay - they belong
+        to the device's history, not to the recording."""
+        with self._lock:
+            cur = self._db.execute("DELETE FROM track_sessions WHERE id = ?",
+                                   (session_id,))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def track_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Recorded sessions, newest first, with duration and point count."""
+        now = time.time()
+        out: List[Dict[str, Any]] = []
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, name, devices, started, ended, created_by "
+                "FROM track_sessions ORDER BY started DESC, id DESC LIMIT ?",
+                (limit,)).fetchall()
+            for sid, name, devices_json, started, ended, created_by in rows:
+                try:
+                    uids = json.loads(devices_json)
+                except (TypeError, ValueError):
+                    uids = []
+                end = ended if ended is not None else now
+                sql = "SELECT COUNT(*) FROM positions WHERE ts BETWEEN ? AND ?"
+                args: List[Any] = [started, end]
+                if uids:
+                    sql += f" AND uid IN ({','.join('?' * len(uids))})"
+                    args.extend(uids)
+                points = self._db.execute(sql, args).fetchone()[0]
+                out.append({
+                    "id": sid, "name": name, "devices": uids,
+                    "all_devices": not uids, "started": started, "ended": ended,
+                    "recording": ended is None, "duration": end - started,
+                    "points": points, "created_by": created_by,
+                })
+        return out
 
     # -- streams -------------------------------------------------------------
 

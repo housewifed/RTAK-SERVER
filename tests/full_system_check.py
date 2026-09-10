@@ -199,9 +199,10 @@ def main() -> int:
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
     work = tempfile.mkdtemp(prefix="rtak-fullcheck-")
-    created = {"users": [], "devices": [], "paths": []}
+    created = {"users": [], "devices": [], "paths": [], "tracks": []}
     procs: list = []
-    socks: list = []
+    socks: list = []      # the live session per test device
+    stale: list = []      # superseded sockets, kept only so cleanup closes them
 
     print(f"\n{C_B}RTAK Server - full system check{C_0}")
     note(f"api {args.api}   media {mhost}   mode {'local' if local else 'remote'}"
@@ -220,12 +221,15 @@ def main() -> int:
         bad(f"web API not answering ({code})")
         return report()
 
-    for port, label in ((args.cot_port, "CoT over TLS"),
-                        (args.enroll_port, "certificate enrollment"),
-                        (8554, "RTSP ingest"), (1935, "RTMP ingest"),
-                        (8889, "WebRTC")):
+    checks = [(args.cot_port, "CoT over TLS"),
+              (args.enroll_port, "certificate enrollment")]
+    if not args.no_video:
+        checks += [(8554, "RTSP ingest"), (1935, "RTMP ingest"), (8889, "WebRTC")]
+    for port, label in checks:
         ok(f"port {port} open ({label})") if port_open(mhost, port) \
             else bad(f"port {port} closed ({label})")
+    if args.no_video:
+        skip("media ports - --no-video, MediaMTX not checked")
 
     # ---------------------------------------------------------------------
     head("2. Authentication")
@@ -428,11 +432,15 @@ def main() -> int:
         try:
             s2 = ctx2.wrap_socket(socket.create_connection((mhost, args.cot_port),
                                                            timeout=15))
-            socks.append(s2)                      # the first socket stays open
             s2.sendall(sa(roam_uid, roam_uid, 51.5074, -0.1278))
             time.sleep(2.5)
             code, devs = a.call("/api/devices")
             moved = next((d for d in (devs or []) if d.get("uid") == roam_uid), None)
+            # The server drops the superseded session, exactly as it does for a
+            # phone that changed network - so from here on the NEW socket is
+            # this device's live one. Writing to the old one would raise.
+            stale.append(socks[0])
+            socks[0] = s2
             if moved and abs((moved.get("lat") or 0) - 51.5074) < 0.01:
                 ok("a device reconnecting from a new socket keeps reporting")
             else:
@@ -483,8 +491,11 @@ def main() -> int:
         time.sleep(0.4)
 
     if socks:
-        socks[0].sendall(geochat(devices[0][0], devices[0][0], f"{TAG} radio check"))
-        socks[0].sendall(emergency(devices[0][0], devices[0][0], 45.4215, -75.6972))
+        try:
+            socks[0].sendall(geochat(devices[0][0], devices[0][0], f"{TAG} radio check"))
+            socks[0].sendall(emergency(devices[0][0], devices[0][0], 45.4215, -75.6972))
+        except OSError as e:
+            bad(f"could not send chat/emergency from the device session: {e}")
     time.sleep(2.5)
 
     code, devs = a.call("/api/devices")
@@ -563,7 +574,66 @@ def main() -> int:
         else bad("SSE /api/stream delivered no events")
 
     # ---------------------------------------------------------------------
-    head("7. Cameras and the stream registry")
+    head("7. Track recording and playback")
+    if not socks:
+        skip("track recording - no connected device to record")
+    else:
+        code, rec = a.call("/api/tracks",
+                           {"devices": created["devices"], "name": f"{TAG} run"},
+                           method="POST")
+        if code != 201 or not isinstance(rec, dict):
+            bad(f"could not start a recording: {code} {rec}")
+        else:
+            created["tracks"].append(rec["id"])
+            ok(f"recording started for {len(created['devices'])} device(s)")
+            code, _ = viewer.call("/api/tracks", {"all": True}, method="POST")
+            ok("viewer denied starting a recording (403)") if code == 403 \
+                else bad(f"viewer start returned {code}, expected 403")
+            code, _ = a.call("/api/tracks", {}, method="POST")
+            ok("recording with no device selection is refused (400)") if code == 400 \
+                else bad(f"empty selection returned {code}, expected 400")
+
+            for i in range(4):          # drive positions into the window
+                for j, s_ in enumerate(socks[:len(devices)]):
+                    try:
+                        s_.sendall(sa(devices[j][0], devices[j][0],
+                                      45.5 + i * 0.002, -75.6 + i * 0.002))
+                    except Exception:  # noqa: BLE001
+                        pass
+                time.sleep(0.5)
+            time.sleep(1.5)
+
+            code, stopped = a.call("/api/tracks/stop", {"id": rec["id"]},
+                                   method="POST")
+            ok("recording stopped") if code == 200 else bad(f"stop returned {code}")
+            code, _ = a.call("/api/tracks/stop", {"id": rec["id"]}, method="POST")
+            ok("stopping it twice is refused (409)") if code == 409 \
+                else bad(f"second stop returned {code}, expected 409")
+
+            code, rows = a.call("/api/tracks")
+            row = next((r for r in (rows or []) if r["id"] == rec["id"]), None)
+            if not row:
+                bad("the recording is missing from /api/tracks")
+            else:
+                ok(f"listed with duration {row['duration']:.1f}s and "
+                   f"{row['points']} point(s)") if row["duration"] > 0 and row["points"] \
+                    else bad(f"unexpected row: {row}")
+                ok("no longer marked as recording") if not row["recording"] \
+                    else bad("still marked as recording after stop")
+
+                q = urllib.parse.urlencode({
+                    "from": row["started"], "to": row["ended"],
+                    "uids": ",".join(created["devices"])})
+                code, pts = a.call(f"/api/history?{q}")
+                inside = [p for p in (pts or [])
+                          if row["started"] <= p["ts"] <= row["ended"]]
+                ok(f"replaying the window returns {len(inside)} position(s)") \
+                    if inside else bad(f"replay returned nothing ({code})")
+                only_ours = {p["uid"] for p in (pts or [])} <= set(created["devices"])
+                ok("replay contains only the recorded devices") if only_ours \
+                    else bad("replay leaked positions from other devices")
+
+    head("8. Cameras and the stream registry")
     cam = f"{TAG}-cam"
     code, r = a.call("/api/streams",
                      {"name": cam, "source": "rtsp://127.0.0.1:8554/nonexistent",
@@ -578,17 +648,23 @@ def main() -> int:
     ok(f"stream list readable ({len(streams)} stream(s))") if code == 200 \
         else bad(f"/api/streams returned {code}")
 
-    code, r = a.call("/api/streams/record", {"path": created["paths"][0] if created["paths"] else cam,
-                                             "enabled": True}, method="POST")
-    ok("recording can be switched on") if code == 200 and r.get("recording") \
-        else bad(f"enabling recording returned {code} {r}")
-    code, r = a.call("/api/streams/record", {"path": created["paths"][0] if created["paths"] else cam,
-                                             "enabled": False}, method="POST")
-    ok("recording can be switched off") if code == 200 and not r.get("recording") \
-        else bad(f"disabling recording returned {code} {r}")
+    # Toggling video recording needs MediaMTX to be up; without it the API
+    # correctly answers 502 and there is nothing to learn here.
+    path0 = created["paths"][0] if created["paths"] else cam
+    code, r = a.call("/api/streams/record", {"path": path0, "enabled": True},
+                     method="POST")
+    if code == 502 and args.no_video:
+        skip("video recording toggle - MediaMTX not running")
+    else:
+        ok("recording can be switched on") if code == 200 and r.get("recording") \
+            else bad(f"enabling recording returned {code} {r}")
+        code, r = a.call("/api/streams/record", {"path": path0, "enabled": False},
+                         method="POST")
+        ok("recording can be switched off") if code == 200 and not r.get("recording") \
+            else bad(f"disabling recording returned {code} {r}")
 
     # ---------------------------------------------------------------------
-    head("8. Video ingest - RTSP, RTMP and SRT")
+    head("9. Video ingest - RTSP, RTMP and SRT")
     live = f"{TAG}-live"
     ptok = args.publish_token
 
@@ -649,7 +725,7 @@ def main() -> int:
             ok(f"{proto} ingest works, plays back as {desc}") if desc \
                 else bad(f"{proto} published but the stream could not be read back")
 
-        head("9. Publish authorization")
+        head("10. Publish authorization")
         if not ptok:
             skip("no PUBLISH_TOKEN configured - publish is open on this server")
         else:
@@ -664,7 +740,7 @@ def main() -> int:
                 ok("publishing without the token is refused")
 
     # ---------------------------------------------------------------------
-    head("10. WebRTC playback tickets")
+    head("11. WebRTC playback tickets")
     wpath = f"{live}-rtsp" if (ffmpeg and not args.no_video) else (created["paths"] or [""])[0]
     offer = ("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
              "m=video 9 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\n"
@@ -689,17 +765,19 @@ def main() -> int:
         else bad(f"ticket endpoint returned {code} {ticket}")
 
     st = whep(wpath)
-    ok(f"WebRTC playback without a ticket is refused (HTTP {st})") if st in (401, 403) \
-        else bad(f"WebRTC without a ticket returned {st}, expected 401/403")
-
-    if tkt:
-        st = whep(wpath, tkt)
-        ok(f"WebRTC playback with a valid ticket passes authorization (HTTP {st})") \
-            if st not in (401, 403, 0) \
-            else bad(f"WebRTC with a valid ticket returned {st}")
+    if st == 0 and args.no_video:
+        skip("WebRTC authorization - MediaMTX not reachable")
+    else:
+        ok(f"WebRTC playback without a ticket is refused (HTTP {st})") if st in (401, 403) \
+            else bad(f"WebRTC without a ticket returned {st}, expected 401/403")
+        if tkt:
+            st = whep(wpath, tkt)
+            ok(f"WebRTC playback with a valid ticket passes authorization (HTTP {st})") \
+                if st not in (401, 403, 0) \
+                else bad(f"WebRTC with a valid ticket returned {st}")
 
     # ---------------------------------------------------------------------
-    head("11. Recording and playback")
+    head("12. Recording and playback")
     if args.no_video or not ffmpeg:
         skip("recording - needs ffmpeg to produce a stream to record")
     else:
@@ -735,7 +813,7 @@ def main() -> int:
             a.call("/api/streams/record", {"path": rpath, "enabled": False}, method="POST")
 
     # ---------------------------------------------------------------------
-    head("12. Certificates and the ATAK truststore")
+    head("13. Certificates and the ATAK truststore")
     if not local:
         skip("certificate files - run on the server itself to check them")
     else:
@@ -763,21 +841,24 @@ def main() -> int:
             bad("truststore.p12 was not generated")
 
     # ---------------------------------------------------------------------
-    head("13. Cleanup")
+    head("14. Cleanup")
     if args.keep:
         skip("cleanup skipped (--keep): "
              f"users={created['users']} devices={created['devices']} paths={created['paths']}")
     else:
-        for s in socks:
+        for s in socks + stale:
             try:
                 s.close()
             except Exception:  # noqa: BLE001
                 pass
         socks.clear()
+        stale.clear()
         for p in procs:
             if p.poll() is None:
                 p.kill()
         time.sleep(1.0)
+        for tid in created["tracks"]:
+            a.call(f"/api/tracks?id={tid}", method="DELETE")
         for m in (a.call("/api/chat")[1] or []):
             if TAG in str(m.get("message", "")) or TAG in str(m.get("sender", "")):
                 a.call(f"/api/chat?id={m['id']}", method="DELETE")
@@ -809,6 +890,10 @@ def main() -> int:
         code, alerts = a.call("/api/alerts")
         left_a = [x for x in (alerts or []) if TAG in str(x.get("uid", ""))]
         ok("test alerts cleared") if not left_a else bad(f"alerts left behind: {left_a}")
+        code, rows = a.call("/api/tracks")
+        left_t = [r for r in (rows or []) if r["id"] in created["tracks"]]
+        ok("test recordings removed") if not left_t \
+            else bad(f"recordings left behind: {[r['id'] for r in left_t]}")
         code, msgs = a.call("/api/chat")
         left_c = [m for m in (msgs or []) if TAG in str(m.get("message", ""))
                   or TAG in str(m.get("sender", ""))]

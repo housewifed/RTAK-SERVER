@@ -79,13 +79,14 @@ local run exercises the certificate files on disk.
 | 4 | Enrollment | token issued, CSR signed by the Marti API, certificate verifies against the CA, `tls/config` + `version/config` + `clientEndPoints` answer, `enroll.zip` refused without a token and served with one, `mode=enroll` package, `ca.mobileconfig` for iTAK, and **the address the QR codes encode** (`web_base`) actually serves both files to an unauthenticated client |
 | 5 | Devices over mTLS | two devices connect on 8089 with client certificates and report positions; a device reconnecting from a second socket (a phone roaming Wi-Fi to cellular) keeps reporting; plain TCP to that port is rejected |
 | 6 | Tracking and messaging | devices visible, breadcrumbs stored, per-device track, chat stored and a message deleted through `DELETE /api/chat?id=` (operator denied, unknown id 404, no args 400), 911 alert raised **and cleared** through `DELETE /api/alerts` (viewer denied, unknown uid 404), stats, live SSE event stream |
-| 7 | Cameras | register a camera path, list streams, recording on and off |
-| 8 | Video ingest | publish over **RTSP**, **RTMP** and **SRT**, each read back with ffprobe to confirm the codec and resolution |
-| 9 | Publish authorization | publishing without `PUBLISH_TOKEN` is refused |
-| 10 | WebRTC playback | ticket minted for a logged-in session; WHEP without a ticket refused (401); with a ticket, authorization passes |
-| 11 | Recording and playback | enable recording, publish 12s, segment appears in `/api/recordings`, playback API returns video bytes |
-| 12 | Certificates | server certificate covers `SERVER_HOST`, CA present, `truststore.p12` readable in the ATAK (legacy PBE) format |
-| 13 | Cleanup | removes every user, device, camera path and recording it created |
+| 7 | Track recording | start a recording for chosen devices (viewer denied 403, empty selection 400), drive positions into it, stop it (second stop 409), check the listed duration and point count, replay exactly that window, and confirm the replay contains only the recorded devices |
+| 8 | Cameras | register a camera path, list streams, recording on and off |
+| 9 | Video ingest | publish over **RTSP**, **RTMP** and **SRT**, each read back with ffprobe to confirm the codec and resolution |
+| 10 | Publish authorization | publishing without `PUBLISH_TOKEN` is refused |
+| 11 | WebRTC playback | ticket minted for a logged-in session; WHEP without a ticket refused (401); with a ticket, authorization passes |
+| 12 | Recording and playback | enable recording, publish 12s, segment appears in `/api/recordings`, playback API returns video bytes |
+| 13 | Certificates | server certificate covers `SERVER_HOST`, CA present, `truststore.p12` readable in the ATAK (legacy PBE) format |
+| 14 | Cleanup | removes every user, device, camera path, chat message, alert and track recording it created |
 
 ### Expected output
 

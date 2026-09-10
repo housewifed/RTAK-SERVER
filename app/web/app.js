@@ -181,12 +181,16 @@ function showUserChip(me) {
   };
   bar.appendChild(chip);
   bar.appendChild(out);
-  // hide admin-only controls for non-admins
+  // hide controls the role cannot use, so nobody meets a 403 by surprise
+  const hide = (ids) => ids.forEach((id) => {
+    const b = document.getElementById(id);
+    if (b) b.style.display = "none";
+  });
   if (me.role !== "admin") {
-    for (const id of ["enroll-btn", "users-btn", "devices-btn", "chat-clear"]) {
-      const b = document.getElementById(id);
-      if (b) b.style.display = "none";
-    }
+    hide(["enroll-btn", "users-btn", "devices-btn", "chat-clear"]);
+  }
+  if (me.role === "viewer") {
+    hide(["record-btn"]);   // starting a recording needs operator
   }
 }
 
@@ -1219,6 +1223,159 @@ document.getElementById("fit").onclick = () => {
   map.fitBounds(bounds, { padding: 80, maxZoom: 15 });
 };
 
+// ------------------------------------------------------ track recording
+
+// A recording is a bookmark over the position stream: which devices, which
+// window. Positions are stored for every device anyway, so this neither
+// duplicates data nor depends on the device having a camera.
+
+let recordTimer = null;
+
+function fmtDuration(sec) {
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, "0")}m`
+           : (m ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`);
+}
+
+function fmtWhen(ts) {
+  return new Date(ts * 1000).toLocaleString([],
+    { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function deviceLabel(uid) {
+  const d = devices.get(uid);
+  return (d && (d.callsign || d.uid)) || uid;
+}
+
+function describeDevices(t) {
+  if (t.all_devices) return "All devices";
+  const names = t.devices.map(deviceLabel);
+  return names.length <= 2 ? names.join(", ")
+                           : `${names[0]} +${names.length - 1} more`;
+}
+
+// Checklist of devices with a Select all master, shared by the record panel
+// and the custom-range playback picker.
+function deviceChecklistHtml(idPrefix) {
+  const rows = [...devices.values()]
+    .sort((a, b) => (a.callsign || a.uid).localeCompare(b.callsign || b.uid))
+    .map((d) => `<label class="dev-pick">
+        <input type="checkbox" class="${idPrefix}-dev" value="${escapeHtml(d.uid)}">
+        <span>${escapeHtml(d.callsign || d.uid)}</span>
+        <em>${escapeHtml(d.platform || d.role || "")}</em>
+      </label>`).join("");
+  return `
+    <label class="dev-pick dev-all">
+      <input type="checkbox" id="${idPrefix}-all"><span><b>Select all</b></span>
+      <em>includes devices that connect later</em>
+    </label>
+    <div class="dev-picklist">${rows || '<p class="muted">No devices yet.</p>'}</div>`;
+}
+
+function wireChecklist(root, idPrefix) {
+  const all = root.querySelector(`#${idPrefix}-all`);
+  const boxes = [...root.querySelectorAll(`.${idPrefix}-dev`)];
+  all.onchange = () => {
+    boxes.forEach((b) => { b.checked = all.checked; b.disabled = all.checked; });
+  };
+  return {
+    selection() {
+      if (all.checked) return { all: true, devices: [] };
+      return { all: false, devices: boxes.filter((b) => b.checked).map((b) => b.value) };
+    },
+  };
+}
+
+async function showRecordPanel() {
+  const ov = document.createElement("div");
+  ov.id = "record-overlay";
+  ov.innerHTML = `
+    <div class="record-card">
+      <h3>Record tracks</h3>
+      <p class="record-sub">Records where devices go, so you can replay it later.
+        Nothing to do with cameras — a device with no video is recorded just the
+        same.</p>
+      <div class="record-cols">
+        <div>
+          <h4>New recording</h4>
+          ${deviceChecklistHtml("rec")}
+          <input id="rec-name" type="text" maxlength="60"
+                 placeholder="Name (optional), e.g. north patrol">
+          <button id="rec-start" class="primary" type="button">⏺ Start recording</button>
+        </div>
+        <div>
+          <h4>In progress</h4>
+          <div id="rec-active">Loading…</div>
+        </div>
+      </div>
+      <p class="user-err" id="rec-err"></p>
+      <button id="rec-close">Close</button>
+    </div>`;
+  document.body.appendChild(ov);
+  const errEl = ov.querySelector("#rec-err");
+  const picker = wireChecklist(ov, "rec");
+
+  async function refreshActive() {
+    let rows = [];
+    try { rows = await (await fetch("/api/tracks", { cache: "no-store" })).json(); }
+    catch { /* keep the last view */ }
+    const active = (rows || []).filter((r) => r.recording);
+    const el = ov.querySelector("#rec-active");
+    if (!el) return;
+    if (!active.length) { el.innerHTML = `<p class="muted">Nothing recording.</p>`; return; }
+    el.innerHTML = active.map((t) => `
+      <div class="rec-row">
+        <div>
+          <b>${escapeHtml(t.name || "Untitled")}</b>
+          <span class="rec-dot">●</span>
+          <div class="rec-meta">${escapeHtml(describeDevices(t))} ·
+            ${fmtDuration(t.duration)} · ${t.points} point${t.points === 1 ? "" : "s"}</div>
+        </div>
+        <button data-stop="${t.id}" type="button">■ Stop</button>
+      </div>`).join("");
+    el.querySelectorAll("button[data-stop]").forEach((b) => {
+      b.onclick = async () => {
+        b.disabled = true;
+        const r = await fetch("/api/tracks/stop", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: +b.dataset.stop }) });
+        if (!r.ok) errEl.textContent = "Could not stop: " + await errText(r);
+        refreshActive();
+      };
+    });
+  }
+
+  ov.querySelector("#rec-start").onclick = async () => {
+    errEl.textContent = "";
+    const sel = picker.selection();
+    if (!sel.all && !sel.devices.length) {
+      errEl.textContent = "Pick at least one device, or tick Select all.";
+      return;
+    }
+    const r = await fetch("/api/tracks", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...sel, name: ov.querySelector("#rec-name").value.trim() }) });
+    if (!r.ok) { errEl.textContent = "Could not start: " + await errText(r); return; }
+    ov.querySelector("#rec-name").value = "";
+    refreshActive();
+  };
+
+  const close = () => { clearInterval(recordTimer); recordTimer = null; ov.remove(); };
+  ov.querySelector("#rec-close").onclick = close;
+  ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+  refreshActive();
+  recordTimer = setInterval(refreshActive, 2000);   // live elapsed time
+}
+
+async function errText(r) {
+  try { return (await r.json()).error || `HTTP ${r.status}`; }
+  catch { return `HTTP ${r.status}`; }
+}
+
+const recordBtn = document.getElementById("record-btn");
+if (recordBtn) recordBtn.onclick = showRecordPanel;
+
 // ------------------------------------------------------------- playback
 
 let playbackMode = false;
@@ -1237,21 +1394,171 @@ function ensureTrailLayer() {
   }, "device-dots");
 }
 
-document.getElementById("playback-btn").onclick = async () => {
+document.getElementById("playback-btn").onclick = () => {
   if (playbackMode) return;
+  showPlaybackPicker();
+};
+
+// Pick WHAT to replay before replaying it: a recording someone made, or an
+// arbitrary window for a chosen set of devices.
+let pbSort = { key: "started", dir: -1 };
+
+async function showPlaybackPicker() {
+  const ov = document.createElement("div");
+  ov.id = "pbpick-overlay";
+  const now = new Date();
+  const iso = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+    .toISOString().slice(0, 16);
+  ov.innerHTML = `
+    <div class="pbpick-card">
+      <h3>Playback</h3>
+      <div class="pbpick-tabs">
+        <button data-tab="tracks" class="on" type="button">Recorded tracks</button>
+        <button data-tab="range" type="button">Custom range</button>
+      </div>
+
+      <section data-panel="tracks">
+        <div class="pbpick-tablewrap"><div id="pb-tracks">Loading…</div></div>
+      </section>
+
+      <section data-panel="range" hidden>
+        <div class="pbpick-range">
+          <label>From <input id="pb-from" type="datetime-local"
+                 value="${iso(new Date(now.getTime() - 2 * 3600 * 1000))}"></label>
+          <label>To <input id="pb-to" type="datetime-local" value="${iso(now)}"></label>
+        </div>
+        ${deviceChecklistHtml("pbr")}
+        <button id="pb-range-play" class="primary" type="button">▶ Play this range</button>
+      </section>
+
+      <p class="user-err" id="pb-err"></p>
+      <button id="pbpick-close">Close</button>
+    </div>`;
+  document.body.appendChild(ov);
+  const errEl = ov.querySelector("#pb-err");
+  const rangePicker = wireChecklist(ov, "pbr");
+
+  ov.querySelectorAll(".pbpick-tabs button").forEach((b) => {
+    b.onclick = () => {
+      ov.querySelectorAll(".pbpick-tabs button").forEach((x) => x.classList.remove("on"));
+      b.classList.add("on");
+      ov.querySelectorAll("section[data-panel]").forEach((sec) => {
+        sec.hidden = sec.dataset.panel !== b.dataset.tab;
+      });
+    };
+  });
+
+  const close = () => ov.remove();
+  ov.querySelector("#pbpick-close").onclick = close;
+  ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+
+  let tracks = [];
+  function drawTracks() {
+    const el = ov.querySelector("#pb-tracks");
+    if (!tracks.length) {
+      el.innerHTML = `<p class="muted">No recordings yet — use <b>⏺ Record</b>
+        to capture a track, or replay a custom range.</p>`;
+      return;
+    }
+    const dir = pbSort.dir;
+    const val = (t) => ({
+      name: (t.name || "").toLowerCase(),
+      device: describeDevices(t).toLowerCase(),
+      started: t.started, duration: t.duration, points: t.points,
+    }[pbSort.key]);
+    const rows = [...tracks].sort((a, b) => {
+      const x = val(a), y = val(b);
+      return (x < y ? -1 : x > y ? 1 : 0) * dir;
+    });
+    const arrow = (k) => pbSort.key === k ? (dir === 1 ? " ▲" : " ▼") : "";
+    el.innerHTML = `<table class="pb-table">
+      <thead><tr>
+        <th data-sort="name">Name${arrow("name")}</th>
+        <th data-sort="device">Devices${arrow("device")}</th>
+        <th data-sort="started">Date / start${arrow("started")}</th>
+        <th data-sort="duration">Duration${arrow("duration")}</th>
+        <th data-sort="points">Points${arrow("points")}</th>
+        <th></th>
+      </tr></thead>
+      <tbody>${rows.map((t) => `<tr${t.recording ? ' class="live"' : ""}>
+        <td>${escapeHtml(t.name || "Untitled")}${t.recording ? ' <span class="rec-dot">●</span>' : ""}</td>
+        <td>${escapeHtml(describeDevices(t))}</td>
+        <td>${escapeHtml(fmtWhen(t.started))}</td>
+        <td>${escapeHtml(fmtDuration(t.duration))}</td>
+        <td>${t.points}</td>
+        <td class="pb-actions">
+          <button data-play="${t.id}" type="button" title="Replay this track">▶</button>
+          <button data-del="${t.id}" type="button" class="danger" title="Delete this recording">🗑</button>
+        </td></tr>`).join("")}</tbody></table>`;
+
+    el.querySelectorAll("th[data-sort]").forEach((th) => {
+      th.onclick = () => {
+        const k = th.dataset.sort;
+        pbSort = { key: k, dir: pbSort.key === k ? -pbSort.dir : (k === "name" || k === "device" ? 1 : -1) };
+        drawTracks();
+      };
+    });
+    el.querySelectorAll("button[data-play]").forEach((b) => {
+      b.onclick = () => {
+        const t = tracks.find((x) => x.id === +b.dataset.play);
+        if (t) startPlayback({
+          since: t.started, until: t.ended || Date.now() / 1000,
+          uids: t.devices, label: t.name || `Track ${t.id}`, close, errEl });
+      };
+    });
+    el.querySelectorAll("button[data-del]").forEach((b) => {
+      b.onclick = async () => {
+        if (!confirm("Delete this recording? The devices' position history is kept.")) return;
+        const r = await fetch(`/api/tracks?id=${b.dataset.del}`, { method: "DELETE" });
+        if (!r.ok) { errEl.textContent = "Could not delete: " + await errText(r); return; }
+        load();
+      };
+    });
+  }
+
+  async function load() {
+    try { tracks = await (await fetch("/api/tracks", { cache: "no-store" })).json(); }
+    catch { errEl.textContent = "Could not load recordings."; tracks = []; }
+    drawTracks();
+  }
+
+  ov.querySelector("#pb-range-play").onclick = () => {
+    const from = ov.querySelector("#pb-from").value;
+    const to = ov.querySelector("#pb-to").value;
+    if (!from || !to) { errEl.textContent = "Pick both a start and an end."; return; }
+    const since = new Date(from).getTime() / 1000;
+    const until = new Date(to).getTime() / 1000;
+    if (!(until > since)) { errEl.textContent = "The end must be after the start."; return; }
+    const sel = rangePicker.selection();
+    startPlayback({ since, until, uids: sel.all ? [] : sel.devices,
+                    label: `${fmtWhen(since)} → ${fmtWhen(until)}`, close, errEl });
+  };
+
+  load();
+}
+
+async function startPlayback({ since, until, uids, label, close, errEl }) {
+  const q = new URLSearchParams({ from: String(since), to: String(until) });
+  if (uids && uids.length) q.set("uids", uids.join(","));
   let rows;
-  try { rows = await (await fetch("/api/history?minutes=120")).json(); }
-  catch { alert("Could not load history."); return; }
-  if (!rows.length) { alert("No track history recorded yet."); return; }
+  try { rows = await (await fetch(`/api/history?${q}`, { cache: "no-store" })).json(); }
+  catch { errEl.textContent = "Could not load that track."; return; }
+  if (!rows.length) {
+    errEl.textContent = "No positions were recorded in that window.";
+    return;
+  }
   pbHistory = rows;
   pbRange = [rows[0].ts, rows[rows.length - 1].ts];
   playbackMode = true;
+  stopFollow();                    // the scrubber owns the map during playback
   ensureTrailLayer();
+  document.getElementById("pb-label").textContent = label || "Playback";
   document.getElementById("playback-bar").hidden = false;
   const slider = document.getElementById("pb-slider");
   slider.value = 1000;
   renderPlaybackAt(pbRange[1]);
-};
+  if (close) close();
+}
 
 function pbValueToTs(v) {
   return pbRange[0] + (pbRange[1] - pbRange[0]) * (v / 1000);

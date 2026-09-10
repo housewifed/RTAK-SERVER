@@ -20,17 +20,18 @@
     </form>
   </div>
 
-  <div id="alert-banner" hidden></div>
+  <div id="alert-banner" role="alert" aria-live="assertive" hidden></div>
 
   <header id="topbar">
     <span class="brand">TAK&nbsp;Revamp</span>
-    <span id="conn" class="pill offline">connecting…</span>
+    <span id="conn" class="pill offline" role="status" aria-live="polite">connecting…</span>
     <span id="counts" class="pill">0 devices</span>
     <button id="enroll-btn" title="Enroll a new device with a QR code">➕ Enroll device</button>
     <button id="users-btn" title="Manage web logins (admin only)">👥 Users</button>
     <button id="devices-btn" title="View and remove connected devices (admin only)">📟 Devices</button>
     <button id="chat-btn" title="Team chat">💬 Chat</button>
-    <button id="playback-btn" title="Replay track history">⏱ Playback</button>
+    <button id="record-btn" title="Record device tracks">⏺ Record</button>
+    <button id="playback-btn" title="Replay recorded tracks">⏱ Playback</button>
     <button id="grid-btn" title="Multi-camera grid view">⊞ Cameras</button>
     <button id="fit" title="Zoom to all devices">⤢ Fit all</button>
   </header>

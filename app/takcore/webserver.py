@@ -42,11 +42,23 @@ ENDPOINT_ROLES = {
     ("DELETE", "/api/devices"): "admin",
     ("DELETE", "/api/alerts"): "operator",
     ("DELETE", "/api/chat"): "admin",
+    ("POST", "/api/tracks"): "operator",
+    ("POST", "/api/tracks/stop"): "operator",
+    ("DELETE", "/api/tracks"): "operator",
     ("POST", "/api/chat"): "operator",
     ("POST", "/api/streams"): "operator",
     ("POST", "/api/streams/record"): "operator",
     ("DELETE", "/api/streams"): "operator",
 }
+
+
+def _float_arg(query, name: str) -> Optional[float]:
+    """One optional float from a parsed query string, ignoring junk."""
+    raw = (query.get(name) or [""])[0]
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
 
 
 def https_enabled(env) -> bool:
@@ -204,14 +216,19 @@ def make_handler(hub: Hub, store: Store, web_dir: str,
                         pb = os.environ.get("MEDIAMTX_PLAYBACK",
                                             "http://mediamtx:9996")
                         self._json(registry.mtx.recordings(spath, pb))
+                elif path == "/api/tracks":
+                    self._json(store.track_sessions())
                 elif path == "/api/history":
-                    mins = 60.0
-                    try:
-                        mins = float(parse_qs(urlparse(self.path).query)
-                                     .get("minutes", ["60"])[0])
-                    except ValueError:
-                        pass
-                    self._json(store.history(min(mins, 1440)))
+                    q = parse_qs(urlparse(self.path).query)
+                    # from/to/uids replay a recorded session or a custom range;
+                    # minutes= is the original "last N minutes" form.
+                    since = _float_arg(q, "from")
+                    until = _float_arg(q, "to")
+                    uids = [u for u in (q.get("uids") or [""])[0].split(",") if u]
+                    mins = _float_arg(q, "minutes") or 60.0
+                    self._json(store.history(minutes=min(mins, 1440),
+                                             since=since, until=until,
+                                             uids=uids or None))
                 elif path == "/api/config":
                     # web_base is the address a PHONE must use to fetch the
                     # enrollment package and the iOS profile. It is not the
@@ -431,6 +448,49 @@ def make_handler(hub: Hub, store: Store, web_dir: str,
                         device_uid=body.get("device_uid"),
                         lat=body.get("lat"), lon=body.get("lon"))
                     self._json(result, 201)
+                elif path == "/api/tracks":
+                    body = self._body_json() or {}
+                    devices = body.get("devices") or []
+                    if not isinstance(devices, list):
+                        self._json({"error": "devices must be a list"}, 400)
+                        return
+                    # "all" is stored as an empty list on purpose: it must also
+                    # cover devices that connect after the recording starts.
+                    if body.get("all"):
+                        devices = []
+                    elif not devices:
+                        self._json({"error": "select at least one device, or "
+                                    "pass all=true"}, 400)
+                        return
+                    sess = self.address_string()
+                    who = self._session()
+                    row = store.start_track_session(
+                        [str(d) for d in devices],
+                        name=(body.get("name") or "").strip() or None,
+                        created_by=(who or {}).get("username"))
+                    hub._push_web({"kind": "track_started", **row})
+                    log.info("track recording %s started by %s (devices=%s)",
+                             row["id"], sess, row["devices"] or "all")
+                    self._json(row, 201)
+                elif path == "/api/tracks/stop":
+                    body = self._body_json() or {}
+                    try:
+                        sid = int(body.get("id"))
+                    except (TypeError, ValueError):
+                        self._json({"error": "id required"}, 400)
+                        return
+                    known = [r for r in store.track_sessions() if r["id"] == sid]
+                    if not known:
+                        self._json({"error": "no such recording"}, 404)
+                        return
+                    if not store.stop_track_session(sid):
+                        self._json({"error": "recording already stopped"}, 409)
+                        return
+                    row = [r for r in store.track_sessions() if r["id"] == sid][0]
+                    hub._push_web({"kind": "track_stopped", **row})
+                    log.info("track recording %s stopped by %s", sid,
+                             self.address_string())
+                    self._json(row)
                 elif path == "/api/streams/record":
                     if registry is None:
                         self._json({"error": "streams disabled"}, 503)
@@ -523,6 +583,18 @@ def make_handler(hub: Hub, store: Store, web_dir: str,
                         log.info("device %s removed by %s", uid,
                                  self.address_string())
                         self._json({"ok": True})
+                elif parsed.path == "/api/tracks":
+                    q = parse_qs(parsed.query)
+                    try:
+                        sid = int((q.get("id") or [""])[0])
+                    except ValueError:
+                        self._json({"error": "id required"}, 400)
+                        return
+                    if not store.delete_track_session(sid):
+                        self._json({"error": "no such recording"}, 404)
+                        return
+                    hub._push_web({"kind": "track_removed", "id": sid})
+                    self._json({"ok": True})
                 elif parsed.path == "/api/chat":
                     q = parse_qs(parsed.query)
                     all_flag = (q.get("all") or [""])[0].lower() in (

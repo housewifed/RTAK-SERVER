@@ -1456,8 +1456,12 @@ if (recordBtn) recordBtn.onclick = showRecordPanel;
 
 let playbackMode = false;
 let pbHistory = [];      // {uid, ts, lat, lon} oldest->newest
+let pbByUid = new Map(); // uid -> that device's fixes, sorted by ts
 let pbRange = [0, 0];    // [minTs, maxTs] in seconds
-let pbTimer = null;
+let pbClock = 0;         // where the playhead is, in track time
+let pbSpeed = 1;         // track seconds per real second
+let pbRaf = null;        // requestAnimationFrame handle while playing
+let pbLastFrame = 0;
 
 function ensureTrailLayer() {
   if (map.getSource("trails")) return;
@@ -1467,6 +1471,15 @@ function ensureTrailLayer() {
     id: "trail-lines", type: "line", source: "trails",
     paint: { "line-color": ["get", "color"], "line-width": 2.5,
              "line-opacity": 0.7 },
+  }, "device-dots");
+  // The reported fixes, so a smooth line is never mistaken for dense truth:
+  // the dots are what the device actually sent, the line between them is us.
+  map.addSource("fixes", { type: "geojson",
+    data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: "fix-dots", type: "circle", source: "fixes",
+    paint: { "circle-radius": 2.5, "circle-color": "#e6edf3",
+             "circle-opacity": 0.55 },
   }, "device-dots");
 }
 
@@ -1624,10 +1637,13 @@ async function startPlayback({ since, until, uids, label, close, errEl }) {
     return;
   }
   pbHistory = rows;
+  indexPlayback(rows);
   pbRange = [rows[0].ts, rows[rows.length - 1].ts];
+  pbClock = pbRange[1];
   playbackMode = true;
   stopFollow();                    // the scrubber owns the map during playback
   ensureTrailLayer();
+  initPbSpeed(pbRange[1] - pbRange[0]);
   document.getElementById("pb-label").textContent = label || "Playback";
   document.getElementById("playback-bar").hidden = false;
   const slider = document.getElementById("pb-slider");
@@ -1640,17 +1656,67 @@ function pbValueToTs(v) {
   return pbRange[0] + (pbRange[1] - pbRange[0]) * (v / 1000);
 }
 
-function renderPlaybackAt(t) {
-  // latest position per uid at or before t; trail = points up to t
-  const latest = new Map();
-  const trailPts = new Map();
-  for (const p of pbHistory) {
-    if (p.ts > t) continue;
-    latest.set(p.uid, p);
-    if (!trailPts.has(p.uid)) trailPts.set(p.uid, []);
-    trailPts.get(p.uid).push([p.lon, p.lat]);
+function pbTsToValue(t) {
+  const span = pbRange[1] - pbRange[0];
+  return span > 0 ? ((t - pbRange[0]) / span) * 1000 : 1000;
+}
+
+// Positions arrive every 15-60s, so snapping a device to its last fix makes it
+// teleport. Indexing each device's fixes once lets every frame binary-search
+// the two fixes around the clock and place the device between them.
+function indexPlayback(rows) {
+  pbByUid = new Map();
+  for (const p of rows) {
+    if (!pbByUid.has(p.uid)) pbByUid.set(p.uid, []);
+    pbByUid.get(p.uid).push(p);
   }
-  // device dots at historical positions (reuse live metadata for color/name)
+  for (const pts of pbByUid.values()) pts.sort((a, b) => a.ts - b.ts);
+}
+
+// Index of the last fix at or before t, or -1 when t precedes the track.
+function lastFixIndexAt(pts, t) {
+  let lo = 0, hi = pts.length - 1, best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid].ts <= t) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  return best;
+}
+
+// Where the device was at t. Between two fixes we interpolate; the straight
+// line is honest about what we know - nothing was recorded in between.
+function positionAt(pts, t) {
+  const i = lastFixIndexAt(pts, t);
+  if (i < 0) return null;                       // not reporting yet
+  const a = pts[i], b = pts[i + 1];
+  if (!b) return { lon: a.lon, lat: a.lat, exact: true };
+  const span = b.ts - a.ts;
+  if (span <= 0) return { lon: a.lon, lat: a.lat, exact: true };
+  const f = Math.min(1, Math.max(0, (t - a.ts) / span));
+  return { lon: a.lon + (b.lon - a.lon) * f,
+           lat: a.lat + (b.lat - a.lat) * f,
+           exact: f === 0 };
+}
+
+function renderPlaybackAt(t) {
+  pbClock = t;
+  const latest = new Map();       // interpolated position per uid
+  const trailPts = new Map();     // path travelled so far
+  const fixPts = [];              // the actual reported fixes, drawn as dots
+  for (const [uid, pts] of pbByUid) {
+    const at = positionAt(pts, t);
+    if (!at) continue;
+    latest.set(uid, at);
+    const i = lastFixIndexAt(pts, t);
+    const trail = pts.slice(0, i + 1).map((p) => [p.lon, p.lat]);
+    trail.push([at.lon, at.lat]);   // join the line to where the device is now
+    trailPts.set(uid, trail);
+    for (let k = 0; k <= i; k++) {
+      fixPts.push({ type: "Feature",
+        geometry: { type: "Point", coordinates: [pts[k].lon, pts[k].lat] },
+        properties: {} });
+    }
+  }
   const feats = [];
   for (const [uid, p] of latest) {
     const d = devices.get(uid) || {};
@@ -1666,6 +1732,9 @@ function renderPlaybackAt(t) {
     });
   }
   map.getSource("devices").setData({ type: "FeatureCollection", features: feats });
+  if (map.getSource("fixes")) {
+    map.getSource("fixes").setData({ type: "FeatureCollection", features: fixPts });
+  }
   // trails
   const lines = [];
   for (const [uid, pts] of trailPts) {
@@ -1680,7 +1749,8 @@ function renderPlaybackAt(t) {
   map.getSource("trails").setData({ type: "FeatureCollection", features: lines });
   document.getElementById("pb-time").textContent =
     new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric",
-      hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    + `  (${fmtDuration(t - pbRange[0])} / ${fmtDuration(pbRange[1] - pbRange[0])})`;
 }
 
 document.getElementById("pb-slider").oninput = (e) => {
@@ -1689,29 +1759,72 @@ document.getElementById("pb-slider").oninput = (e) => {
 };
 
 function stopPbPlay() {
-  if (pbTimer) { clearInterval(pbTimer); pbTimer = null;
-    document.getElementById("pb-play").textContent = "▶"; }
+  if (pbRaf) { cancelAnimationFrame(pbRaf); pbRaf = null; }
+  document.getElementById("pb-play").textContent = "▶";
+}
+
+// Track time advances by real elapsed time times the chosen speed, drawn on
+// every animation frame. The old loop stepped a fixed 1/125th of the window
+// every 100ms, so a 30s recording played at 2.5x and a 2h one at 600x - the
+// same lurching motion whatever you were watching.
+function pbFrame(now) {
+  const dt = (now - pbLastFrame) / 1000;
+  pbLastFrame = now;
+  let t = pbClock + dt * pbSpeed;
+  if (t >= pbRange[1]) {
+    t = pbRange[1];
+    renderPlaybackAt(t);
+    document.getElementById("pb-slider").value = 1000;
+    stopPbPlay();
+    return;
+  }
+  renderPlaybackAt(t);
+  document.getElementById("pb-slider").value = pbTsToValue(t);
+  pbRaf = requestAnimationFrame(pbFrame);
 }
 
 document.getElementById("pb-play").onclick = () => {
-  if (pbTimer) { stopPbPlay(); return; }
+  if (pbRaf) { stopPbPlay(); return; }
+  if (pbClock >= pbRange[1]) {          // restart from the beginning
+    pbClock = pbRange[0];
+    document.getElementById("pb-slider").value = 0;
+  }
   document.getElementById("pb-play").textContent = "⏸";
-  const slider = document.getElementById("pb-slider");
-  if (+slider.value >= 1000) slider.value = 0;
-  pbTimer = setInterval(() => {
-    let v = +slider.value + 8;   // ~ full sweep in ~12s
-    if (v >= 1000) { v = 1000; stopPbPlay(); }
-    slider.value = v;
-    renderPlaybackAt(pbValueToTs(v));
-  }, 100);
+  pbLastFrame = performance.now();
+  pbRaf = requestAnimationFrame(pbFrame);
 };
+
+// 1x means one second of track per second of real time. A long recording at 1x
+// would be a very dull hour, so the default is whichever preset gets through it
+// in about a minute - shown in the control rather than applied invisibly.
+const PB_SPEEDS = [0.25, 0.5, 1, 2, 5, 10, 30, 60];
+
+function defaultSpeedFor(span) {
+  const wanted = span / 60;
+  return PB_SPEEDS.reduce((best, s) =>
+    Math.abs(s - wanted) < Math.abs(best - wanted) ? s : best, 1);
+}
+
+function initPbSpeed(span) {
+  const sel = document.getElementById("pb-speed");
+  if (!sel) return;
+  if (!sel.options.length) {
+    sel.innerHTML = PB_SPEEDS.map((s) =>
+      `<option value="${s}">${s}x</option>`).join("");
+    sel.onchange = () => { pbSpeed = +sel.value; };
+  }
+  pbSpeed = Math.max(1, defaultSpeedFor(span));
+  sel.value = String(pbSpeed);
+}
 
 document.getElementById("pb-close").onclick = () => {
   stopPbPlay();
   playbackMode = false;
   document.getElementById("playback-bar").hidden = true;
-  if (map.getSource("trails"))
-    map.getSource("trails").setData({ type: "FeatureCollection", features: [] });
+  for (const src of ["trails", "fixes"]) {
+    if (map.getSource(src))
+      map.getSource(src).setData({ type: "FeatureCollection", features: [] });
+  }
   refresh(); // back to live
 };
 

@@ -194,6 +194,17 @@ ffmpeg -re -f lavfi -i testsrc=size=320x240:rate=15 -c:v libx264 -f flv   "rtmp:
 ffprobe -v error -show_entries stream=codec_name rtsp://<host>:8554/live/TEST
 ```
 
+### Playback smoothness
+
+Devices report every 15-60s, so playback interpolates between fixes rather than
+snapping to the last one. The small dots along a trail are the **reported
+fixes**; the line between them is drawn by the server's UI, not measured. If a
+device appears to move through a building, that is interpolation across a gap in
+the data, not a bad fix.
+
+Speed is track-time per real second: `1x` replays a 10-minute run in 10 minutes.
+The default is whichever preset finishes in about a minute.
+
 ## What no script covers
 
 - **The browser UI.** Log in, confirm the map draws, a device moves, chat sends,

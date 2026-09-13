@@ -19,3 +19,6 @@ certs/
 .DS_Store
 
 .devdata/
+
+# browser automation scratch output
+.playwright-mcp/

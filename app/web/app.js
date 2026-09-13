@@ -95,6 +95,17 @@ const map = new maplibregl.Map({
 });
 map.addControl(new maplibregl.NavigationControl(), "bottom-right");
 
+// Publish the toolbar's real height so the panels below it never cover a
+// button that wrapped onto a second row.
+(() => {
+  const bar = document.getElementById("topbar");
+  if (!bar || typeof ResizeObserver === "undefined") return;
+  const publish = () => document.documentElement.style
+    .setProperty("--topbar-h", `${Math.ceil(bar.getBoundingClientRect().height)}px`);
+  new ResizeObserver(publish).observe(bar);
+  publish();
+})();
+
 // ------------------------------------------------------------- basemap
 
 // Street is the dimmed OSM the dark UI was built around; Plain is the same
@@ -1462,15 +1473,29 @@ let pbClock = 0;         // where the playhead is, in track time
 let pbSpeed = 1;         // track seconds per real second
 let pbRaf = null;        // requestAnimationFrame handle while playing
 let pbLastFrame = 0;
+let pbColors = new Map(); // uid -> trail colour, fixed for the whole playback
+let pbHidden = new Set(); // uids unticked in the legend
+// "none" leaves the camera alone; "one" keeps pbFollowUid centred; "frame"
+// keeps every visible device in view.
+let pbFollowMode = "none";
+let pbFollowUid = null;
 
 function ensureTrailLayer() {
   if (map.getSource("trails")) return;
   map.addSource("trails", { type: "geojson",
     data: { type: "FeatureCollection", features: [] } });
+  // Drawn twice: a dark casing under a coloured line. The casing is what keeps
+  // a trail readable over satellite imagery, where no single colour contrasts
+  // with both pale concrete and dark forest. (It was 2.5px at 70%, no casing.)
+  map.addLayer({
+    id: "trail-casing", type: "line", source: "trails",
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: { "line-color": "#0b0f14", "line-width": 6, "line-opacity": 0.85 },
+  }, "device-dots");
   map.addLayer({
     id: "trail-lines", type: "line", source: "trails",
-    paint: { "line-color": ["get", "color"], "line-width": 2.5,
-             "line-opacity": 0.7 },
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: { "line-color": ["get", "color"], "line-width": 3, "line-opacity": 1 },
   }, "device-dots");
   // The reported fixes, so a smooth line is never mistaken for dense truth:
   // the dots are what the device actually sent, the line between them is us.
@@ -1478,8 +1503,15 @@ function ensureTrailLayer() {
     data: { type: "FeatureCollection", features: [] } });
   map.addLayer({
     id: "fix-dots", type: "circle", source: "fixes",
-    paint: { "circle-radius": 2.5, "circle-color": "#e6edf3",
-             "circle-opacity": 0.55 },
+    // Scaled by zoom: at full size a dense track read as a string of beads
+    // and hid the line itself. Zoomed out the trail is a clean line; zoom in
+    // and every reported fix is still there to see.
+    paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"],
+                               11, 0.8, 14, 1.8, 17, 3.2],
+             "circle-color": ["get", "color"],
+             "circle-stroke-width": ["interpolate", ["linear"], ["zoom"],
+                                     11, 0, 14, 0.8, 17, 1.2],
+             "circle-stroke-color": "#0b0f14" },
   }, "device-dots");
 }
 
@@ -1638,6 +1670,13 @@ async function startPlayback({ since, until, uids, label, close, errEl }) {
   }
   pbHistory = rows;
   indexPlayback(rows);
+  // Colours are assigned from every device in this playback, once: hiding one
+  // later must not repaint the rest.
+  pbColors = assignPlaybackColors([...pbByUid.keys()].map((uid) =>
+    ({ uid, callsign: (devices.get(uid) || {}).callsign })));
+  pbHidden = new Set();
+  pbFollowMode = "none";
+  pbFollowUid = null;
   pbRange = [rows[0].ts, rows[rows.length - 1].ts];
   pbClock = pbRange[1];
   playbackMode = true;
@@ -1646,6 +1685,11 @@ async function startPlayback({ since, until, uids, label, close, errEl }) {
   initPbSpeed(pbRange[1] - pbRange[0]);
   document.getElementById("pb-label").textContent = label || "Playback";
   document.getElementById("playback-bar").hidden = false;
+  document.body.classList.add("playback-on");
+  // map controls sit above the bar on phones; give CSS its real height
+  document.documentElement.style.setProperty("--pb-bar-h",
+    `${Math.ceil(document.getElementById("playback-bar").getBoundingClientRect().height)}px`);
+  buildPlaybackLegend();
   const slider = document.getElementById("pb-slider");
   slider.value = 1000;
   renderPlaybackAt(pbRange[1]);
@@ -1673,30 +1717,8 @@ function indexPlayback(rows) {
   for (const pts of pbByUid.values()) pts.sort((a, b) => a.ts - b.ts);
 }
 
-// Index of the last fix at or before t, or -1 when t precedes the track.
-function lastFixIndexAt(pts, t) {
-  let lo = 0, hi = pts.length - 1, best = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (pts[mid].ts <= t) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
-  }
-  return best;
-}
-
-// Where the device was at t. Between two fixes we interpolate; the straight
-// line is honest about what we know - nothing was recorded in between.
-function positionAt(pts, t) {
-  const i = lastFixIndexAt(pts, t);
-  if (i < 0) return null;                       // not reporting yet
-  const a = pts[i], b = pts[i + 1];
-  if (!b) return { lon: a.lon, lat: a.lat, exact: true };
-  const span = b.ts - a.ts;
-  if (span <= 0) return { lon: a.lon, lat: a.lat, exact: true };
-  const f = Math.min(1, Math.max(0, (t - a.ts) / span));
-  return { lon: a.lon + (b.lon - a.lon) * f,
-           lat: a.lat + (b.lat - a.lat) * f,
-           exact: f === 0 };
-}
+// lastFixIndexAt, positionAt, assignPlaybackColors, boundsOf and needsReframe
+// live in playback-core.js, where tests/web/ covers them.
 
 function renderPlaybackAt(t) {
   pbClock = t;
@@ -1704,9 +1726,11 @@ function renderPlaybackAt(t) {
   const trailPts = new Map();     // path travelled so far
   const fixPts = [];              // the actual reported fixes, drawn as dots
   for (const [uid, pts] of pbByUid) {
+    if (pbHidden.has(uid)) continue;
     const at = positionAt(pts, t);
     if (!at) continue;
     latest.set(uid, at);
+    const color = pbColors.get(uid) || PB_OVERFLOW;
     const i = lastFixIndexAt(pts, t);
     const trail = pts.slice(0, i + 1).map((p) => [p.lon, p.lat]);
     trail.push([at.lon, at.lat]);   // join the line to where the device is now
@@ -1714,19 +1738,19 @@ function renderPlaybackAt(t) {
     for (let k = 0; k <= i; k++) {
       fixPts.push({ type: "Feature",
         geometry: { type: "Point", coordinates: [pts[k].lon, pts[k].lat] },
-        properties: {} });
+        properties: { color } });
     }
   }
   const feats = [];
   for (const [uid, p] of latest) {
     const d = devices.get(uid) || {};
-    const isCam = d.platform === "camera";
     feats.push({
       type: "Feature",
       geometry: { type: "Point", coordinates: [p.lon, p.lat] },
       properties: {
         uid, label: d.callsign || uid,
-        color: isCam ? CAMERA_COLOR : (TEAM_COLORS[d.team] || DEFAULT_COLOR),
+        // the marker wears its trail's colour, so line and dot read as one
+        color: pbColors.get(uid) || PB_OVERFLOW,
         stale: false, hasVideo: false, alerting: false,
       },
     });
@@ -1739,18 +1763,169 @@ function renderPlaybackAt(t) {
   const lines = [];
   for (const [uid, pts] of trailPts) {
     if (pts.length < 2) continue;
-    const d = devices.get(uid) || {};
     lines.push({
       type: "Feature",
       geometry: { type: "LineString", coordinates: pts },
-      properties: { color: TEAM_COLORS[d.team] || DEFAULT_COLOR },
+      properties: { color: pbColors.get(uid) || PB_OVERFLOW },
     });
   }
   map.getSource("trails").setData({ type: "FeatureCollection", features: lines });
+  applyPlaybackCamera(latest);
   document.getElementById("pb-time").textContent =
     new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric",
       hour: "2-digit", minute: "2-digit", second: "2-digit" })
     + `  (${fmtDuration(t - pbRange[0])} / ${fmtDuration(pbRange[1] - pbRange[0])})`;
+}
+
+// ------------------------------------------------ playback camera + legend
+
+// Keep the chosen device centred, or every visible device in view. jumpTo, not
+// easeTo: this runs on every animation frame, and a fresh 700ms ease each frame
+// would cancel the previous one and stutter. The position is already continuous
+// because it is interpolated, so a plain jump reads as smooth motion.
+function applyPlaybackCamera(latest, { force = false } = {}) {
+  if (pbFollowMode === "one") {
+    const p = latest.get(pbFollowUid);
+    if (p) map.jumpTo({ center: [p.lon, p.lat] });
+    return;
+  }
+  if (pbFollowMode !== "frame") return;
+  const pts = [...latest.values()].map((p) => [p.lon, p.lat]);
+  if (!pts.length) return;
+  const b = map.getBounds();
+  const view = { west: b.getWest(), south: b.getSouth(),
+                 east: b.getEast(), north: b.getNorth() };
+  // Only re-fit once someone nears the edge; re-fitting every frame would make
+  // the zoom breathe constantly as devices shuffle around.
+  if (!force && !needsReframe(pts, view, 0.15)) return;
+  if (pts.length === 1) {
+    map.jumpTo({ center: pts[0], zoom: Math.max(map.getZoom(), 15) });
+    return;
+  }
+  const bb = boundsOf(pts);
+  // maxZoom stops two devices standing together zooming the map to rooftops
+  map.fitBounds([[bb.west, bb.south], [bb.east, bb.north]],
+                { padding: 90, maxZoom: 16, duration: 0 });
+}
+
+function currentPlaybackPositions() {
+  const out = new Map();
+  for (const [uid, pts] of pbByUid) {
+    if (pbHidden.has(uid)) continue;
+    const at = positionAt(pts, pbClock);
+    if (at) out.set(uid, at);
+  }
+  return out;
+}
+
+function playbackUidsInColourOrder() {
+  const order = [...pbColors.keys()];
+  return [...pbByUid.keys()].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+}
+
+function buildPlaybackLegend() {
+  const el = document.getElementById("pb-legend");
+  if (!el) return;
+  const rows = playbackUidsInColourOrder().map((uid) => {
+    const d = devices.get(uid) || {};
+    const name = escapeHtml(d.callsign || uid);
+    const color = pbColors.get(uid) || PB_OVERFLOW;
+    return `<div class="pbl-row" data-uid="${escapeHtml(uid)}">
+        <span class="pbl-swatch" style="background:${color}" aria-hidden="true"></span>
+        <span class="pbl-name" title="${escapeHtml(uid)}">${name}</span>
+        <label class="pbl-show" title="Show this device's trail">
+          <input type="checkbox" data-show="${escapeHtml(uid)}" checked>
+          <span>show</span>
+        </label>
+        <label class="pbl-follow" title="Keep this device centred">
+          <input type="radio" name="pb-follow" value="one" data-uid="${escapeHtml(uid)}">
+          <span>follow</span>
+        </label>
+      </div>`;
+  }).join("");
+  el.innerHTML = `
+    <header>
+      <span>Playback devices</span>
+      <button type="button" id="pbl-collapse" aria-expanded="true"
+              title="Collapse this panel">⌃</button>
+    </header>
+    <div class="pbl-body">
+      ${rows}
+      <div class="pbl-modes">
+        <label><input type="radio" name="pb-follow" value="frame"><span>Frame all visible</span></label>
+        <label><input type="radio" name="pb-follow" value="none" checked><span>Don't move the map</span></label>
+      </div>
+    </div>`;
+
+  el.querySelectorAll("input[data-show]").forEach((box) => {
+    box.onchange = () => {
+      const uid = box.dataset.show;
+      if (box.checked) pbHidden.delete(uid); else pbHidden.add(uid);
+      if (!box.checked && pbFollowMode === "one" && pbFollowUid === uid) {
+        pbFollowMode = "none"; pbFollowUid = null;   // nothing left to follow
+      }
+      renderPlaybackAt(pbClock);
+      if (pbFollowMode === "frame") applyPlaybackCamera(currentPlaybackPositions(), { force: true });
+      syncPlaybackLegend();
+    };
+  });
+  el.querySelectorAll('input[name="pb-follow"]').forEach((radio) => {
+    radio.onchange = () => {
+      if (!radio.checked) return;
+      pbFollowMode = radio.value;
+      pbFollowUid = radio.value === "one" ? radio.dataset.uid : null;
+      if (pbFollowMode === "one") {
+        const p = currentPlaybackPositions().get(pbFollowUid);
+        // start close enough to see the device move
+        if (p) map.jumpTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 15) });
+      } else if (pbFollowMode === "frame") {
+        applyPlaybackCamera(currentPlaybackPositions(), { force: true });
+      }
+      syncPlaybackLegend();
+    };
+  });
+  const collapse = el.querySelector("#pbl-collapse");
+  collapse.onclick = () => {
+    const open = collapse.getAttribute("aria-expanded") === "true";
+    collapse.setAttribute("aria-expanded", open ? "false" : "true");
+    collapse.textContent = open ? "⌄" : "⌃";
+    el.querySelector(".pbl-body").hidden = open;
+  };
+  syncPlaybackLegend();
+  el.hidden = false;
+}
+
+// Make the controls reflect state, e.g. after a drag turned following off.
+function syncPlaybackLegend() {
+  const el = document.getElementById("pb-legend");
+  if (!el || !el.innerHTML) return;     // not built: no playback running
+  el.querySelectorAll('input[name="pb-follow"]').forEach((r) => {
+    r.checked = r.value === "one"
+      ? (pbFollowMode === "one" && r.dataset.uid === pbFollowUid)
+      : r.value === pbFollowMode;
+  });
+  el.querySelectorAll(".pbl-row").forEach((row) => {
+    const uid = row.dataset.uid;
+    const hidden = pbHidden.has(uid);
+    row.classList.toggle("off", hidden);
+    row.querySelector('input[type="radio"]').disabled = hidden;
+    row.classList.toggle("following", pbFollowMode === "one" && pbFollowUid === uid);
+  });
+}
+
+function closePlaybackLegend() {
+  const el = document.getElementById("pb-legend");
+  if (el) { el.hidden = true; el.innerHTML = ""; }
+}
+
+// Dragging the map is the user taking the camera back, during playback too.
+for (const ev of ["dragstart", "rotatestart", "pitchstart"]) {
+  map.on(ev, () => {
+    if (!playbackMode || pbFollowMode === "none") return;
+    pbFollowMode = "none";
+    pbFollowUid = null;
+    syncPlaybackLegend();
+  });
 }
 
 document.getElementById("pb-slider").oninput = (e) => {
@@ -1825,6 +2000,11 @@ document.getElementById("pb-close").onclick = () => {
     if (map.getSource(src))
       map.getSource(src).setData({ type: "FeatureCollection", features: [] });
   }
+  closePlaybackLegend();
+  document.body.classList.remove("playback-on");
+  pbFollowMode = "none";
+  pbFollowUid = null;
+  pbHidden = new Set();
   refresh(); // back to live
 };
 

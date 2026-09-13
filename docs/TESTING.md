@@ -17,6 +17,15 @@ PYTHONPATH=app python3 -m unittest discover -s tests -p "test_*.py"
 
 (`python3 -m pytest tests` works too, if you have pytest.)
 
+The browser-side playback logic — trail colour assignment, interpolation between
+fixes, and when *Frame all* moves the camera — lives in `app/web/playback-core.js`
+with no DOM or map dependency, so it has its own tests using Node's built-in
+runner (no install needed):
+
+```bash
+node --test tests/web/test_playback_core.js
+```
+
 ---
 
 ## 1. Health check
@@ -204,6 +213,14 @@ the data, not a bad fix.
 
 Speed is track-time per real second: `1x` replays a 10-minute run in 10 minutes.
 The default is whichever preset finishes in about a minute.
+
+Each device in a playback gets its own trail colour, assigned once in callsign
+order: blue, orange, aqua, then yellow, magenta, green, violet, red, and neutral
+grey from the ninth. Only the first three are distinguishable from one another
+for red-green colour-blind viewers (validated all-pairs against the dark map), so
+from the fourth device on, identity is carried by the callsign label and the
+legend as well as colour — untick devices in the legend to get down to three when
+colour alone has to do the work.
 
 ## What no script covers
 

@@ -10,6 +10,10 @@
   --danger-bg: #c0392b;     /* white on this is 5.44:1; #e74c3c was 3.82:1 */
   --line: #2a3441;          /* decorative separators */
   --line-strong: #54657d;   /* borders that carry meaning: 3.08:1 on --bg */
+  /* The toolbar wraps onto a second row when it runs out of width. Panels hang
+     off its measured height (set by app.js) rather than a fixed pixel offset,
+     which put the basemap switch on top of a wrapped Sign out button. */
+  --topbar-h: 52px;
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
@@ -62,7 +66,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 #fit:hover { border-color: var(--accent); color: var(--accent); }
 
 #roster {
-  position: absolute; top: 54px; right: 12px; z-index: 10;
+  position: absolute; top: calc(var(--topbar-h) + 2px); right: 12px; z-index: 10;
   /* border-box so the width rule means the width you see: without it the
      padding made the panel 209px on a 390px phone, 54% of the screen. */
   box-sizing: border-box;
@@ -697,7 +701,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
   #topbar button { font-size: 0; padding: 7px 9px; }   /* keep the icon, drop the label */
   #topbar button::first-letter { font-size: 15px; }
   .brand { font-size: 13px; }
-  #roster { width: min(230px, 46vw); top: 92px; }
+  #roster { width: min(230px, 46vw); }
 }
 @media (pointer: coarse) {
   #topbar button { min-height: 44px; }
@@ -708,7 +712,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 /* Top-left, under the toolbar: bottom-left is the chat panel, bottom-right the
    zoom controls, top-right the roster. */
 .basemap-switch {
-  position: absolute; top: 62px; left: 12px; z-index: 10;
+  position: absolute; top: calc(var(--topbar-h) + 10px); left: 12px; z-index: 10;
   display: flex; gap: 2px; padding: 3px;
   background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; backdrop-filter: blur(6px);
@@ -722,7 +726,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .basemap-switch button.on { color: #06131d; background: var(--accent); font-weight: 600; }
 @media (pointer: coarse) { .basemap-switch button { min-height: 44px; } }
 @media (max-width: 720px) {
-  .basemap-switch { top: 100px; padding: 2px; }
+  .basemap-switch { padding: 2px; }
   .basemap-switch button { padding: 5px 8px; font-size: 11px; }
 }
 
@@ -735,3 +739,89 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 }
 #pb-speed:hover { border-color: var(--accent); }
 @media (pointer: coarse) { #pb-speed { min-height: 44px; } }
+
+
+/* ------------------------------------------------------- playback legend */
+/* Under the basemap switch: the playback bar along the bottom is already full,
+   and two or more trails on one map always need a legend. */
+#pb-legend {
+  position: absolute; top: calc(var(--topbar-h) + 58px); left: 12px; z-index: 11;
+  box-sizing: border-box; width: 300px; max-height: calc(100% - 200px);
+  overflow-y: auto; font-size: 13px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; backdrop-filter: blur(6px);
+}
+#pb-legend > header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 7px 10px 7px 12px; border-bottom: 1px solid var(--line);
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted);
+}
+#pbl-collapse {
+  font: inherit; font-size: 14px; line-height: 1; cursor: pointer;
+  min-width: 28px; min-height: 28px; color: var(--muted);
+  background: none; border: 0; border-radius: 6px;
+}
+#pbl-collapse:hover { color: var(--text); background: rgba(255, 255, 255, .07); }
+.pbl-body { padding: 6px 8px 8px; }
+.pbl-row {
+  display: grid; grid-template-columns: 22px 1fr auto auto;
+  align-items: center; gap: 8px; padding: 4px 4px; border-radius: 6px;
+}
+.pbl-row.following { background: rgba(63, 182, 255, .13); }
+.pbl-row.off .pbl-name, .pbl-row.off .pbl-swatch { opacity: .35; }
+/* a short cased line, so the swatch looks like the trail it stands for */
+.pbl-swatch {
+  width: 22px; height: 5px; border-radius: 3px;
+  box-shadow: 0 0 0 2px #0b0f14;
+}
+.pbl-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pbl-show, .pbl-follow, .pbl-modes label {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: var(--muted); font-size: 12px; cursor: pointer; min-height: 28px;
+}
+.pbl-show:hover, .pbl-follow:hover, .pbl-modes label:hover { color: var(--text); }
+.pbl-row input, .pbl-modes input { accent-color: var(--accent); margin: 0; }
+.pbl-modes {
+  display: grid; gap: 2px; margin-top: 6px; padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+@media (pointer: coarse) {
+  .pbl-show, .pbl-follow, .pbl-modes label, #pbl-collapse { min-height: 44px; }
+}
+@media (max-width: 720px) {
+  #pb-legend { width: min(300px, calc(100vw - 24px)); }
+}
+
+
+/* ------------------------------------------------- playback on small screens */
+/* The bar had min-width: 480px, which the speed selector pushed to 526px: on a
+   390px phone it spilled off both edges and Play itself was off screen. Below
+   720px it spans the screen in two rows instead. */
+@media (max-width: 720px) {
+  #playback-bar {
+    left: 12px; right: 12px; transform: none; min-width: 0;
+    display: grid; grid-template-columns: auto 1fr auto auto;
+    grid-template-areas: "close label time time" "slider slider speed play";
+    gap: 8px 10px; padding: 8px 10px;
+  }
+  #pb-close { grid-area: close; }
+  #pb-label { grid-area: label; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #playback-bar #pb-time { grid-area: time; min-width: 0; font-size: 11px; }
+  #playback-bar #pb-slider { grid-area: slider; min-width: 0; }
+  #pb-speed-wrap { grid-area: speed; }
+  #pb-play { grid-area: play; }
+  /* the grid stretched Play to 93x25px: wide, but far too short for a thumb */
+  #playback-bar button, #pb-speed { min-height: 40px; }
+  #pb-play { min-width: 48px; font-size: 16px; }
+  /* During playback the legend is the device list; on a phone there is no room
+     for the live roster beside it. */
+  body.playback-on #roster { display: none; }
+  /* the two-row bar is taller than the old one, and the zoom buttons landed on
+     its corner; lift them clear while playback is showing */
+  body.playback-on .maplibregl-ctrl-bottom-right { bottom: calc(var(--pb-bar-h, 110px) + 26px); }
+}
+
+@media (pointer: coarse) {
+  #playback-bar button, #pb-speed { min-height: 44px; }
+}

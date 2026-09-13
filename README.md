@@ -11,7 +11,8 @@ It is the same server as the Docker build, packaged to run natively:
   (live video included) travels with it
 - **Record tracks** for chosen devices (or all of them), then replay a recording
   or any custom time range — no camera required, with smooth playback at a
-  speed you choose
+  speed you choose, a distinct trail colour per device, and the option to follow
+  one device or keep them all in frame
 - **Street or satellite** basemap, switchable on the map (satellite imagery
   carries a place-name overlay so you can still say where something is)
 - **Chat** and **911 emergency** alerts
@@ -29,9 +30,9 @@ and run it:
 
 ```bash
 # normal PC / server (uname -m says x86_64)
-wget https://github.com/housewifed/RTAK-SERVER/releases/download/v1.3.0/rtak-server-1.3.0-linux-amd64.run
-chmod +x rtak-server-1.3.0-linux-amd64.run
-sudo ./rtak-server-1.3.0-linux-amd64.run
+wget https://github.com/housewifed/RTAK-SERVER/releases/download/v1.4.0/rtak-server-1.4.0-linux-amd64.run
+chmod +x rtak-server-1.4.0-linux-amd64.run
+sudo ./rtak-server-1.4.0-linux-amd64.run
 ```
 
 On a Raspberry Pi 5 / ARM machine (`uname -m` says `aarch64`) use the
@@ -44,7 +45,7 @@ them at boot, and prints your admin password.
 Non-interactive:
 
 ```bash
-sudo ./rtak-server-1.3.0-linux-amd64.run --yes --host rtak.example.com
+sudo ./rtak-server-1.4.0-linux-amd64.run --yes --host rtak.example.com
 ```
 
 **Already running something on 8080 or 80?** SABnzbd, Home Assistant, Nextcloud
@@ -52,7 +53,7 @@ and Jenkins all like those ports. Tell the installer which ones are free instead
 — nothing else has to move:
 
 ```bash
-sudo ./rtak-server-1.3.0-linux-amd64.run --yes --host rtak.example.com \
+sudo ./rtak-server-1.4.0-linux-amd64.run --yes --host rtak.example.com \
      --http-port 8081 --caddy-http-port 8880
 ```
 
@@ -106,7 +107,7 @@ Run the new installer over the top. Your devices, certificates, recordings and
 settings are preserved:
 
 ```bash
-sudo ./rtak-server-1.3.0-linux-amd64.run --yes
+sudo ./rtak-server-1.4.0-linux-amd64.run --yes
 ```
 
 ## Uninstall

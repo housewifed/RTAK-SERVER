@@ -58,6 +58,11 @@ const map = new maplibregl.Map({
         type: "raster",
         tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
         tileSize: 256,
+        // OSM serves nothing past zoom 19. Without this MapLibre asks for zoom-20
+        // tiles when you zoom in close (sooner on high-density screens), every
+        // request fails, and the street map goes blank. With it, the zoom-19
+        // tiles are stretched instead.
+        maxzoom: 19,
         attribution: "© OpenStreetMap contributors",
       },
       sat: {
@@ -1479,6 +1484,13 @@ let pbHidden = new Set(); // uids unticked in the legend
 // keeps every visible device in view.
 let pbFollowMode = "none";
 let pbFollowUid = null;
+// What the map has been sent vs what it has finished drawing (uid -> fix index).
+let pbSentIdx = new Map();
+let pbDrawnIdx = new Map();
+let pbLastPublishAt = 0;
+let pbDirty = true;       // something other than the clock changed (show/hide)
+let pbFlushRaf = null;
+let pbTrailVisible = true;   // the drawn trail is hidden while it runs ahead of the dot
 
 function ensureTrailLayer() {
   if (map.getSource("trails")) return;
@@ -1492,8 +1504,22 @@ function ensureTrailLayer() {
     layout: { "line-join": "round", "line-cap": "round" },
     paint: { "line-color": "#0b0f14", "line-width": 6, "line-opacity": 0.85 },
   }, "device-dots");
+  // The head - the few points from the last drawn fix to the dot - moves every
+  // frame, so it lives in its own tiny source. Both casings go under both lines
+  // so there is no dark seam where the head joins the trail.
+  map.addSource("trailheads", { type: "geojson", data: emptyFC() });
+  map.addLayer({
+    id: "trailhead-casing", type: "line", source: "trailheads",
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: { "line-color": "#0b0f14", "line-width": 6, "line-opacity": 0.85 },
+  }, "device-dots");
   map.addLayer({
     id: "trail-lines", type: "line", source: "trails",
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: { "line-color": ["get", "color"], "line-width": 3, "line-opacity": 1 },
+  }, "device-dots");
+  map.addLayer({
+    id: "trailhead-lines", type: "line", source: "trailheads",
     layout: { "line-join": "round", "line-cap": "round" },
     paint: { "line-color": ["get", "color"], "line-width": 3, "line-opacity": 1 },
   }, "device-dots");
@@ -1503,6 +1529,7 @@ function ensureTrailLayer() {
     data: { type: "FeatureCollection", features: [] } });
   map.addLayer({
     id: "fix-dots", type: "circle", source: "fixes",
+    minzoom: 12,          // sub-pixel below this anyway; don't draw thousands
     // Scaled by zoom: at full size a dense track read as a string of beads
     // and hid the line itself. Zoomed out the trail is a clean line; zoom in
     // and every reported fix is still there to see.
@@ -1661,9 +1688,12 @@ async function showPlaybackPicker() {
 async function startPlayback({ since, until, uids, label, close, errEl }) {
   const q = new URLSearchParams({ from: String(since), to: String(until) });
   if (uids && uids.length) q.set("uids", uids.join(","));
-  let rows;
-  try { rows = await (await fetch(`/api/history?${q}`, { cache: "no-store" })).json(); }
-  catch { errEl.textContent = "Could not load that track."; return; }
+  let rows, truncated = false;
+  try {
+    const r = await fetch(`/api/history?${q}`, { cache: "no-store" });
+    truncated = r.headers.get("X-History-Truncated") === "1";
+    rows = await r.json();
+  } catch { errEl.textContent = "Could not load that track."; return; }
   if (!rows.length) {
     errEl.textContent = "No positions were recorded in that window.";
     return;
@@ -1677,13 +1707,23 @@ async function startPlayback({ since, until, uids, label, close, errEl }) {
   pbHidden = new Set();
   pbFollowMode = "none";
   pbFollowUid = null;
+  pbSentIdx = new Map();
+  pbDrawnIdx = new Map();
+  pbLastPublishAt = 0;
+  pbDirty = true;
+  setTrailVisible(true);
   pbRange = [rows[0].ts, rows[rows.length - 1].ts];
   pbClock = pbRange[1];
   playbackMode = true;
   stopFollow();                    // the scrubber owns the map during playback
   ensureTrailLayer();
   initPbSpeed(pbRange[1] - pbRange[0]);
-  document.getElementById("pb-label").textContent = label || "Playback";
+  const lbl = document.getElementById("pb-label");
+  lbl.textContent = (label || "Playback") + (truncated ? " (partial)" : "");
+  // never let a cut-short replay pass for the whole thing
+  lbl.title = truncated
+    ? `This window holds more positions than one replay can load; showing the first ${rows.length.toLocaleString()}. Pick a shorter range to see the rest.`
+    : "";
   document.getElementById("playback-bar").hidden = false;
   document.body.classList.add("playback-on");
   // map controls sit above the bar on phones; give CSS its real height
@@ -1720,27 +1760,83 @@ function indexPlayback(rows) {
 // lastFixIndexAt, positionAt, assignPlaybackColors, boundsOf and needsReframe
 // live in playback-core.js, where tests/web/ covers them.
 
+// How often the long trail and fix dots may be re-sent (see shouldPublish).
+const PB_PUBLISH = { minInterval: 250, maxStale: 2000 };
+
+function emptyFC() { return { type: "FeatureCollection", features: [] }; }
+
+// Send each visible device's trail up to its current fix, and its fix dots.
+// One MultiPoint per device rather than a Feature per fix: 5,700 separate dot
+// objects per update was a large part of what the old per-frame render built.
+function publishTrails(current) {
+  const lines = [], fixes = [];
+  for (const [uid, i] of current) {
+    if (i < 0) continue;              // not started at the playhead: nothing to draw
+    const pts = pbByUid.get(uid);
+    const color = pbColors.get(uid) || PB_OVERFLOW;
+    const coords = new Array(i + 1);
+    for (let k = 0; k <= i; k++) coords[k] = [pts[k].lon, pts[k].lat];
+    if (coords.length >= 2) {
+      lines.push({ type: "Feature", properties: { color },
+                   geometry: { type: "LineString", coordinates: coords } });
+    }
+    fixes.push({ type: "Feature", properties: { color },
+                 geometry: { type: "MultiPoint", coordinates: coords } });
+  }
+  map.getSource("trails").setData({ type: "FeatureCollection", features: lines });
+  map.getSource("fixes").setData({ type: "FeatureCollection", features: fixes });
+  pbSentIdx = new Map(current);
+  pbLastPublishAt = performance.now();
+  pbDirty = false;
+}
+
+// After a rewind the trail still on the map extends past the dot until the
+// shorter one has been drawn, so it is hidden meanwhile - by opacity, not by
+// visibility. A source whose layers are all visibility:none stops being used:
+// MapLibre drops its tiles and isSourceLoaded() turns vacuously true, so the
+// renderer took the new trail as drawn, showed the layers, and the trail was
+// missing for several frames while its tiles were rebuilt (code review; measured
+// 12 tiles -> 0 when hidden). Opacity keeps the tiles, and "loaded" honest.
+const PB_TRAIL_OPACITY = [
+  ["trail-casing", "line-opacity", 0.85],
+  ["trail-lines", "line-opacity", 1],
+  ["fix-dots", "circle-opacity", 1],
+  ["fix-dots", "circle-stroke-opacity", 1],
+];
+function setTrailVisible(on) {
+  if (on === pbTrailVisible) return;
+  pbTrailVisible = on;
+  for (const [id, prop, value] of PB_TRAIL_OPACITY) {
+    if (map.getLayer(id)) map.setPaintProperty(id, prop, on ? value : 0);
+  }
+}
+
+// When paused (scrubbing, show/hide), nothing else calls the renderer again, so
+// keep rendering on animation frames until the trail on the map has caught up.
+function schedulePlaybackFlush() {
+  if (pbFlushRaf || pbRaf || !playbackMode) return;
+  pbFlushRaf = requestAnimationFrame(() => {
+    pbFlushRaf = null;
+    if (playbackMode) renderPlaybackAt(pbClock);
+  });
+}
+
 function renderPlaybackAt(t) {
   pbClock = t;
-  const latest = new Map();       // interpolated position per uid
-  const trailPts = new Map();     // path travelled so far
-  const fixPts = [];              // the actual reported fixes, drawn as dots
+  const latest = new Map();    // uid -> interpolated position at t
+  const current = new Map();   // uid -> index of its last fix at or before t
   for (const [uid, pts] of pbByUid) {
     if (pbHidden.has(uid)) continue;
     const at = positionAt(pts, t);
-    if (!at) continue;
-    latest.set(uid, at);
-    const color = pbColors.get(uid) || PB_OVERFLOW;
-    const i = lastFixIndexAt(pts, t);
-    const trail = pts.slice(0, i + 1).map((p) => [p.lon, p.lat]);
-    trail.push([at.lon, at.lat]);   // join the line to where the device is now
-    trailPts.set(uid, trail);
-    for (let k = 0; k <= i; k++) {
-      fixPts.push({ type: "Feature",
-        geometry: { type: "Point", coordinates: [pts[k].lon, pts[k].lat] },
-        properties: { color } });
-    }
+    // A shown device that has not reached its first fix is -1, not absent:
+    // absent, a scrub back to before a late starter's first fix neither hid
+    // its old trail nor counted as a rewind (code review; measured 27-244ms of
+    // stale trail with no dot). As -1 it is both "ahead" and a rewind.
+    current.set(uid, at ? lastFixIndexAt(pts, t) : -1);
+    if (at) latest.set(uid, at);
   }
+
+  // 1. The dots: a few features, every frame.
   const feats = [];
   for (const [uid, p] of latest) {
     const d = devices.get(uid) || {};
@@ -1756,20 +1852,37 @@ function renderPlaybackAt(t) {
     });
   }
   map.getSource("devices").setData({ type: "FeatureCollection", features: feats });
-  if (map.getSource("fixes")) {
-    map.getSource("fixes").setData({ type: "FeatureCollection", features: fixPts });
+
+  // 2. The long trail and fix dots: only when they changed, and never queued
+  //    behind an update the worker has not finished.
+  if (map.isSourceLoaded("trails")) pbDrawnIdx = pbSentIdx;   // last send is on screen
+  setTrailVisible(!trailIsAhead(pbDrawnIdx, current));
+  const idle = map.isSourceLoaded("trails") && map.isSourceLoaded("fixes");
+  const { changed, rewound } = indexChanges(pbSentIdx, current);
+  if (shouldPublish({ now: performance.now(), lastPublishAt: pbLastPublishAt, idle,
+                      changed, rewound, dirty: pbDirty }, PB_PUBLISH)) {
+    publishTrails(current);
   }
-  // trails
-  const lines = [];
-  for (const [uid, pts] of trailPts) {
-    if (pts.length < 2) continue;
-    lines.push({
-      type: "Feature",
-      geometry: { type: "LineString", coordinates: pts },
-      properties: { color: pbColors.get(uid) || PB_OVERFLOW },
-    });
+
+  // 3. The head: from the last fix actually drawn on the map to the dot, every
+  //    frame. Starting from the drawn index rather than the sent one means no
+  //    gap opens while the worker is still applying the last trail update.
+  const heads = [];
+  for (const [uid, at] of latest) {
+    const coords = headCoordinates(pbByUid.get(uid),
+      pbDrawnIdx.has(uid) ? pbDrawnIdx.get(uid) : -1, current.get(uid), at);
+    if (coords.length >= 2) {
+      heads.push({ type: "Feature", properties: { color: pbColors.get(uid) || PB_OVERFLOW },
+                   geometry: { type: "LineString", coordinates: coords } });
+    }
   }
-  map.getSource("trails").setData({ type: "FeatureCollection", features: lines });
+  map.getSource("trailheads").setData({ type: "FeatureCollection", features: heads });
+
+  // Not caught up yet and not playing? Come back next frame.
+  const unsettled = pbDirty || indexChanges(pbSentIdx, current).changed
+    || indexChanges(pbDrawnIdx, pbSentIdx).changed;
+  if (unsettled) schedulePlaybackFlush();
+
   applyPlaybackCamera(latest);
   document.getElementById("pb-time").textContent =
     new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric",
@@ -1861,6 +1974,7 @@ function buildPlaybackLegend() {
     box.onchange = () => {
       const uid = box.dataset.show;
       if (box.checked) pbHidden.delete(uid); else pbHidden.add(uid);
+      pbDirty = true;
       if (!box.checked && pbFollowMode === "one" && pbFollowUid === uid) {
         pbFollowMode = "none"; pbFollowUid = null;   // nothing left to follow
       }
@@ -1936,6 +2050,7 @@ document.getElementById("pb-slider").oninput = (e) => {
 function stopPbPlay() {
   if (pbRaf) { cancelAnimationFrame(pbRaf); pbRaf = null; }
   document.getElementById("pb-play").textContent = "▶";
+  schedulePlaybackFlush();   // the last throttled trail update still has to land
 }
 
 // Track time advances by real elapsed time times the chosen speed, drawn on
@@ -1996,7 +2111,9 @@ document.getElementById("pb-close").onclick = () => {
   stopPbPlay();
   playbackMode = false;
   document.getElementById("playback-bar").hidden = true;
-  for (const src of ["trails", "fixes"]) {
+  if (pbFlushRaf) { cancelAnimationFrame(pbFlushRaf); pbFlushRaf = null; }
+  setTrailVisible(true);
+  for (const src of ["trails", "fixes", "trailheads"]) {
     if (map.getSource(src))
       map.getSource(src).setData({ type: "FeatureCollection", features: [] });
   }

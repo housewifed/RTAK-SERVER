@@ -116,3 +116,119 @@ test("boundsOf wraps the points, and is null for none", () => {
     { west: -4, south: 2, east: 3, north: 9 });
   assert.equal(core.boundsOf([]), null);
 });
+
+// ------------------------------------------------- incremental publishing
+//
+// Regression: renderPlaybackAt pushed the whole trail and every fix to the map
+// on every animation frame. Past ~1,000 fixes the map worker fell behind: the
+// dot drew minutes behind its own trail, and the backlog crashed the tab.
+
+const P = { minInterval: 250, maxStale: 2000 };
+const base = { now: 10000, lastPublishAt: 0, idle: true,
+               changed: false, rewound: false, dirty: false };
+
+test("nothing to publish when nothing changed", () => {
+  assert.equal(core.shouldPublish({ ...base }, P), false);
+});
+
+test("forward progress publishes once the worker is idle and the interval passed", () => {
+  assert.equal(core.shouldPublish({ ...base, changed: true, lastPublishAt: 9700 }, P), true);
+});
+
+test("forward progress waits out the minimum interval", () => {
+  assert.equal(core.shouldPublish({ ...base, changed: true, lastPublishAt: 9900 }, P), false);
+});
+
+test("forward progress never queues behind a busy worker", () => {
+  // this is the backlog that crashed the tab
+  assert.equal(core.shouldPublish({ ...base, changed: true, idle: false, lastPublishAt: 9000 }, P), false);
+});
+
+test("a busy worker cannot starve the trail forever", () => {
+  assert.equal(core.shouldPublish({ ...base, changed: true, idle: false, lastPublishAt: 7500 }, P), true);
+});
+
+test("a rewind waits for a busy worker like everything else", () => {
+  // Code review: sending rewinds on a timer while the worker was busy let a
+  // slider drag on a long track rebuild the backlog. The stale trail is hidden
+  // instead until the redraw can go out.
+  assert.equal(core.shouldPublish({ ...base, changed: true, rewound: true, idle: false, lastPublishAt: 9850 }, P), false);
+});
+
+test("a rewind goes out as soon as the worker is idle, without waiting out the interval", () => {
+  assert.equal(core.shouldPublish({ ...base, changed: true, rewound: true, idle: true, lastPublishAt: 9990 }, P), true);
+});
+
+test("a rewind stuck behind a busy worker still goes out after maxStale", () => {
+  assert.equal(core.shouldPublish({ ...base, changed: true, rewound: true, idle: false, lastPublishAt: 7500 }, P), true);
+});
+
+test("trailIsAhead is true while any drawn trail extends past its device's playhead", () => {
+  assert.equal(core.trailIsAhead(new Map([["a", 50]]), new Map([["a", 40]])), true);
+  assert.equal(core.trailIsAhead(new Map([["a", 40]]), new Map([["a", 50]])), false);
+  assert.equal(core.trailIsAhead(new Map([["a", 40]]), new Map([["a", 40]])), false);
+  assert.equal(core.trailIsAhead(new Map([["a", 50]]), new Map()), false);
+});
+
+test("an explicit change (show/hide) skips the interval but not the idle check", () => {
+  assert.equal(core.shouldPublish({ ...base, dirty: true, lastPublishAt: 9990 }, P), true);
+  assert.equal(core.shouldPublish({ ...base, dirty: true, idle: false, lastPublishAt: 9990 }, P), false);
+});
+
+const walk = Array.from({ length: 20 }, (_, k) => ({ ts: 100 + k, lat: k, lon: k * 2 }));
+
+test("the head runs from the last drawn fix through newer fixes to the dot", () => {
+  const head = core.headCoordinates(walk, 10, 13, { lon: 27, lat: 13.5 });
+  assert.deepEqual(head, [[20, 10], [22, 11], [24, 12], [26, 13], [27, 13.5]]);
+});
+
+test("the head is just the last drawn fix and the dot between two fixes", () => {
+  assert.deepEqual(core.headCoordinates(walk, 10, 10, { lon: 20.5, lat: 10.25 }),
+                   [[20, 10], [20.5, 10.25]]);
+});
+
+test("after a rewind the head is empty until the trail is redrawn", () => {
+  assert.deepEqual(core.headCoordinates(walk, 15, 12, { lon: 24.5, lat: 12.25 }), []);
+});
+
+test("a device not drawn yet gets its whole path so far as the head", () => {
+  assert.deepEqual(core.headCoordinates(walk, -1, 2, { lon: 5, lat: 2.5 }),
+                   [[0, 0], [2, 1], [4, 2], [5, 2.5]]);
+});
+
+test("indexChanges spots forward progress, rewinds and new devices", () => {
+  const published = new Map([["a", 5], ["b", 9]]);
+  assert.deepEqual(core.indexChanges(published, new Map([["a", 5], ["b", 9]])),
+                   { changed: false, rewound: false });
+  assert.deepEqual(core.indexChanges(published, new Map([["a", 6], ["b", 9]])),
+                   { changed: true, rewound: false });
+  assert.deepEqual(core.indexChanges(published, new Map([["a", 5], ["b", 4]])),
+                   { changed: true, rewound: true });
+  assert.deepEqual(core.indexChanges(published, new Map([["a", 5], ["b", 9], ["c", 0]])),
+                   { changed: true, rewound: false });
+});
+
+test("a device that disappears from the visible set counts as a change", () => {
+  assert.deepEqual(core.indexChanges(new Map([["a", 5], ["b", 9]]), new Map([["a", 5]])),
+                   { changed: true, rewound: false });
+});
+
+// A device that is shown but has not reached its first fix at the playhead is
+// represented as index -1, not left out. Code review: left out, a scrub back to
+// before a late-starting device's first fix neither hid its old trail nor
+// counted as a rewind, so the trail lingered with no dot for up to 250ms.
+
+test("a device rewound to before its first fix makes its drawn trail count as ahead", () => {
+  assert.equal(core.trailIsAhead(new Map([["late", 400]]), new Map([["late", -1]])), true);
+});
+
+test("a device rewound to before its first fix counts as a rewind", () => {
+  assert.deepEqual(core.indexChanges(new Map([["late", 400]]), new Map([["late", -1]])),
+                   { changed: true, rewound: true });
+});
+
+test("a device that has not started and was never drawn is neither ahead nor a rewind", () => {
+  assert.equal(core.trailIsAhead(new Map([["late", -1]]), new Map([["late", -1]])), false);
+  assert.deepEqual(core.indexChanges(new Map([["late", -1]]), new Map([["late", -1]])),
+                   { changed: false, rewound: false });
+});

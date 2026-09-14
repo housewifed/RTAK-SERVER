@@ -87,7 +87,73 @@ function needsReframe(points, view, margin = 0.15) {
     lon < inner.west || lon > inner.east || lat < inner.south || lat > inner.north);
 }
 
+// ------------------------------------------------- incremental publishing
+//
+// Pushing the whole trail and every fix to the map on every animation frame made
+// each update bigger than the last. Past ~1,000 fixes the map worker could not
+// finish one before the next arrived: the dot drew minutes behind its own trail
+// and the backlog crashed the tab. So the long trail and the fix dots are
+// re-sent only when they change, and never queued behind a busy worker; the dot
+// and a short head line to it are what move every frame.
+
+/** Did the drawn fix index move for any device, and did any go backwards? A
+ * device appearing or disappearing is a change too. */
+function indexChanges(published, current) {
+  let changed = published.size !== current.size, rewound = false;
+  for (const [uid, i] of current) {
+    if (!published.has(uid)) { changed = true; continue; }
+    const p = published.get(uid);
+    if (i !== p) changed = true;
+    if (i < p) rewound = true;
+  }
+  return { changed, rewound };
+}
+
+/** Should the long trail and the fix dots be re-sent to the map this frame?
+ *
+ * The one rule that matters: nothing is sent while the worker is still busy
+ * with the previous update, so updates cannot pile up. On top of that:
+ *  - never while nothing changed;
+ *  - maxStale is the escape hatch, at most one send per maxStale, so a map that
+ *    stays busy (tiles loading while following) cannot freeze the trail;
+ *  - a rewind or an explicit change (show/hide) goes out the moment the worker
+ *    is idle; ordinary forward progress also waits out minInterval.
+ * A rewind used to skip the idle check on a timer, which let a slider drag on a
+ * long track rebuild the backlog. The stale trail is hidden instead (see
+ * trailIsAhead) until the redraw can go out.
+ */
+function shouldPublish(s, opts) {
+  const since = s.now - s.lastPublishAt;
+  if (!s.changed && !s.dirty) return false;
+  if (since >= opts.maxStale) return true;
+  if (!s.idle) return false;
+  return s.rewound || s.dirty || since >= opts.minInterval;
+}
+
+/** Is the trail on the map drawn past where some device's playhead now is?
+ * True just after a rewind, until the shorter trail has been drawn. The renderer
+ * hides the trail meanwhile rather than show it running ahead of the dot. */
+function trailIsAhead(drawn, current) {
+  for (const [uid, i] of current) {
+    if (drawn.has(uid) && drawn.get(uid) > i) return true;
+  }
+  return false;
+}
+
+/** The short line from the last fix already drawn on the map, through any
+ * newer fixes, to the dot. Empty after a rewind: the drawn trail is ahead of
+ * the dot then and must be redrawn, not extended. publishedIdx -1 means this
+ * device has not been drawn yet, so its whole path so far is the head. */
+function headCoordinates(pts, publishedIdx, i, at) {
+  if (i < publishedIdx) return [];
+  const out = [];
+  for (let k = Math.max(0, publishedIdx); k <= i; k++) out.push([pts[k].lon, pts[k].lat]);
+  out.push([at.lon, at.lat]);
+  return out;
+}
+
 if (typeof module !== "undefined") {
   module.exports = { PB_PALETTE, PB_OVERFLOW, assignPlaybackColors,
-                     lastFixIndexAt, positionAt, boundsOf, needsReframe };
+                     lastFixIndexAt, positionAt, boundsOf, needsReframe,
+                     indexChanges, shouldPublish, headCoordinates, trailIsAhead };
 }

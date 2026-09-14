@@ -222,6 +222,20 @@ from the fourth device on, identity is carried by the callsign label and the
 legend as well as colour — untick devices in the legend to get down to three when
 colour alone has to do the work.
 
+### Long recordings
+
+A playback of a few thousand fixes used to rebuild the whole trail on every
+animation frame; the map worker fell behind, the dot lagged the trail by minutes,
+and the tab ran out of memory near the end (Chrome "Aw, Snap! Error code: 5").
+The dot now moves every frame, but the long trail is re-sent at most four times a
+second and only once the map has drawn the previous one; a short line bridges the
+last drawn fix to the dot. To check a long track by hand: play it at 30x or 60x to
+the end — the dot should stay at the tip of its line the whole way, and
+dragging the slider backwards should never leave trail ahead of the dot.
+
+History for one playback window is capped at 250,000 positions. If a window holds
+more, the time label reads **(partial)** and the tooltip says why.
+
 ## What no script covers
 
 - **The browser UI.** Log in, confirm the map draws, a device moves, chat sends,

@@ -106,10 +106,12 @@ def make_handler(hub: Hub, store: Store, web_dir: str,
             self.end_headers()
             self.wfile.write(data)
 
-        def _json(self, obj, status: int = 200) -> None:
+        def _json(self, obj, status: int = 200, headers=None) -> None:
             body = json.dumps(obj).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self.send_header("Content-Length", str(len(body)))
             # API data is live (stream readiness, device state); never let the
             # browser serve a cached copy or the map goes stale until a manual
@@ -226,9 +228,15 @@ def make_handler(hub: Hub, store: Store, web_dir: str,
                     until = _float_arg(q, "to")
                     uids = [u for u in (q.get("uids") or [""])[0].split(",") if u]
                     mins = _float_arg(q, "minutes") or 60.0
-                    self._json(store.history(minutes=min(mins, 1440),
-                                             since=since, until=until,
-                                             uids=uids or None))
+                    cap = (store.HISTORY_WINDOW_MAX_ROWS if since is not None
+                           else store.HISTORY_RECENT_MAX_ROWS)
+                    rows, truncated = store.history_capped(
+                        cap, minutes=min(mins, 1440), since=since,
+                        until=until, uids=uids or None)
+                    # A list response cannot say "there was more", and silently
+                    # replaying part of a track is worse than saying so.
+                    extra = {"X-History-Truncated": "1"} if truncated else None
+                    self._json(rows, headers=extra)
                 elif path == "/api/config":
                     # web_base is the address a PHONE must use to fetch the
                     # enrollment package and the iOS profile. It is not the

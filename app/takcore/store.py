@@ -165,7 +165,13 @@ class Store:
             cols = [c[0] for c in cur.description]
             return dict(zip(cols, row))
 
-    def history(self, minutes: float = 60.0, max_rows: int = 20000,
+    # A replay window is read whole: at 1 Hz, 20,000 rows is only 5.5 hours of
+    # one device or 2.8 hours of two, and the old single cap silently cut long
+    # recordings short. 250,000 covers a full day of two devices at 1 Hz.
+    HISTORY_WINDOW_MAX_ROWS = 250_000
+    HISTORY_RECENT_MAX_ROWS = 20_000
+
+    def history(self, minutes: float = 60.0, max_rows: Optional[int] = None,
                 since: Optional[float] = None, until: Optional[float] = None,
                 uids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Positions in a window, oldest first — the source for playback.
@@ -174,6 +180,9 @@ class Store:
         replay an arbitrary window for a chosen set of devices, which is what a
         recorded session and the custom-range picker need.
         """
+        if max_rows is None:
+            max_rows = (self.HISTORY_WINDOW_MAX_ROWS if since is not None
+                        else self.HISTORY_RECENT_MAX_ROWS)
         if since is None:
             since = time.time() - minutes * 60
         sql = "SELECT uid, ts, lat, lon FROM positions WHERE ts >= ?"
@@ -190,6 +199,15 @@ class Store:
             cur = self._db.execute(sql, args)
             return [{"uid": r[0], "ts": r[1], "lat": r[2], "lon": r[3]}
                     for r in cur.fetchall()]
+
+    def history_capped(self, cap: int, **window: Any):
+        """history() plus whether the window held more than `cap` rows.
+
+        Reads one row beyond the cap and trims it: comparing `len(rows) >= cap`
+        instead would call a window of exactly `cap` rows truncated when every
+        row had come back."""
+        rows = self.history(max_rows=cap + 1, **window)
+        return rows[:cap], len(rows) > cap
 
     def track(self, uid: str, limit: int = 500) -> List[Dict[str, Any]]:
         with self._lock:

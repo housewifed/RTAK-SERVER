@@ -147,6 +147,55 @@ class TestHistoryWindow(unittest.TestCase):
         self.assertEqual(len(self.store.history(minutes=10)), 3)
 
 
+class TestLongRecordingsReplayCompletely(unittest.TestCase):
+    """Regression: history() stopped at 20,000 rows, so a long 1 Hz recording
+    replayed only its beginning and then simply ended - one device loses its
+    tail after 5.5 hours, two devices after 2.8. Playback must get the whole
+    window, and must be told when it did not."""
+
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.start = time.time() - 30000
+        rows = [("DEV-A", self.start + i, 1.0, 1.0, 0.0) for i in range(25000)]
+        self.store._db.executemany(
+            "INSERT INTO positions (uid, ts, lat, lon, hae) VALUES (?,?,?,?,?)", rows)
+        self.store._db.commit()
+
+    def test_a_window_returns_more_than_twenty_thousand_rows(self):
+        rows = self.store.history(since=self.start, until=self.start + 30000)
+        self.assertEqual(len(rows), 25000)
+
+    def test_a_replay_window_reaches_the_end_of_the_track(self):
+        rows = self.store.history(since=self.start, until=self.start + 30000)
+        self.assertEqual(rows[-1]["ts"], self.start + 24999)
+
+    def test_exactly_the_cap_is_not_reported_as_truncated(self):
+        """Code review: `len(rows) >= cap` flagged a window holding exactly cap
+        rows as partial, though every row came back."""
+        rows, truncated = self.store.history_capped(
+            since=self.start, until=self.start + 30000, cap=25000)
+        self.assertEqual(len(rows), 25000)
+        self.assertFalse(truncated)
+
+    def test_one_row_over_the_cap_is_reported_and_trimmed(self):
+        rows, truncated = self.store.history_capped(
+            since=self.start, until=self.start + 30000, cap=24999)
+        self.assertEqual(len(rows), 24999)
+        self.assertTrue(truncated)
+
+    def test_under_the_cap_is_complete(self):
+        rows, truncated = self.store.history_capped(
+            since=self.start, until=self.start + 30000, cap=30000)
+        self.assertEqual(len(rows), 25000)
+        self.assertFalse(truncated)
+
+    def test_the_window_cap_is_high_but_still_exists(self):
+        self.assertGreaterEqual(Store.HISTORY_WINDOW_MAX_ROWS, 200000)
+        rows = self.store.history(since=self.start, until=self.start + 30000,
+                                  max_rows=100)
+        self.assertEqual(len(rows), 100)
+
+
 class TestRetentionProtectsSavedTracks(unittest.TestCase):
     def setUp(self):
         # no upsert_device here: it writes a fresh position row of its own,
